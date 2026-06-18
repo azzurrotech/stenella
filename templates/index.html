@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stenella - Card Database</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+<h1>stenella</h1>
+<p>Card-Based Data Platform</p>
+<a href="https://www.azzurro.tech" class="back">Go to Azzurro Technology</a>
+</header>
+<main>
+<div class="workspace">
+<section class="sidebar">
+<h2>Cards ({{len .Cards}})</h2>
+<form action="/add" method="post" class="add-form">
+<input type="text" name="title" placeholder="Type a title for a new card..." required>
+<button type="submit" class="button">Add Card</button>
+</form>
+<div class="card-list">
+{{range .Cards}}
+<a href="/show/{{.ID}}" class="card-link {{if $.Selected}}{{if eq .ID $.Selected.ID}}active{{end}}{{end}}">
+<div class="card-summary">
+<div class="card-title">{{.Title}}</div>
+<div class="card-meta">{{.Created}}</div>
+</div>
+</a>
+{{else}}
+<p class="empty">No cards yet. Create one above.</p>
+{{end}}
+</div>
+</section>
+<section class="detail">
+{{if .Selected}}
+<h2>{{.Selected.Title}}</h2>
+<div class="detail-meta">Created: {{.Selected.Created}}</div>
+<div class="detail-summary">{{.Selected.Summary}}</div>
+<div class="detail-sep"></div>
+<form action="/edit/{{.Selected.ID}}" method="post" class="edit-form">
+<textarea name="detail" rows="6">{{.Selected.Detail}}</textarea>
+<button type="submit" class="button">Save Detail</button>
+</form>
+<div class="detail-actions">
+<form action="/link/{{.Selected.ID}}" method="post" class="link-form">
+<select name="child_id">
+<option value="">Link a card...</option>
+{{range .Others}}
+<option value="{{.ID}}">{{.Title}}</option>
+{{end}}
+</select>
+<button type="submit" class="button secondary">Link Card</button>
+</form>
+</div>
+{{if .Children}}
+<h3>Child Cards</h3>
+<div class="child-list">
+{{range .Children}}
+<a href="/show/{{.ID}}" class="card-link child">
+<div class="card-title">↳ {{.Title}}</div>
+</a>
+{{end}}
+</div>
+{{end}}
+{{else}}
+<div class="detail-empty">
+<p>Select a card to view details.</p>
+</div>
+{{end}}
+</section>
+</div>
+</main>
+</body>
+</html>
