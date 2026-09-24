@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"azzurrotech/stenella/web"
 )
@@ -29,8 +30,25 @@ func main() {
 	adminPass := flag.String("admin-pass", "", "atp administrator password (or $STENELLA_ADMIN_PASSWORD)")
 	base := flag.String("public-base", "", "absolute base URL used in share links, e.g. https://azzurro.tech")
 	libsDir := flag.String("libs-dir", "static", "directory holding the veni/vidi/vici/vini submodule worktrees")
+	platformPath := flag.String("platform-path", "/platform", "path on mapped hosts that redirects to the stenella platform")
+	hostSites := map[string]string{}
+	flag.Func("host-site", "Serve a client's hosted site at / on a public host (host=client; repeatable).",
+		func(v string) error {
+			host, client, ok := strings.Cut(v, "=")
+			if !ok || strings.TrimSpace(host) == "" || strings.TrimSpace(client) == "" {
+				return fmt.Errorf("--host-site must look like azzurro.tech=azzurrotech, got %q", v)
+			}
+			hostSites[strings.ToLower(strings.TrimSpace(host))] = strings.TrimSpace(client)
+			return nil
+		})
 	help := flag.Bool("help", false, "show usage")
 	flag.Parse()
+
+	if len(hostSites) == 0 {
+		// Default: the azzurro.tech domains host the azzurrotech client site.
+		hostSites["azzurro.tech"] = "azzurrotech"
+		hostSites["www.azzurro.tech"] = "azzurrotech"
+	}
 
 	if *help {
 		flag.Usage()
@@ -44,10 +62,16 @@ stenella — data platform on top of atp.
   --admin-pass  atp admin password     (default admin; or $STENELLA_ADMIN_PASSWORD)
   --public-base absolute base for share links, e.g. https://azzurro.tech
   --libs-dir    dir with the veni/vidi/vici/vini libraries (default static)
+  --host-site   serve a client's hosted site at / on a host (host=client,
+                repeatable; default azzurro.tech=azzurrotech)
+  --platform-path path on mapped hosts that redirects to the platform
+                (default /platform)
 
 Routes atp owns: /api, /clients, /c, /gw, /login, /logout, /health.
 Routes stenella owns: / (homepage), /s/portal, /s/admin, /s/feed/**,
-/s/x/**, /s/api/**.
+/s/x/**, /s/api/**, /s/static/**, /s/data/**.
+On hosts mapped with --host-site: "/" serves the client's hosted site and
+{--platform-path} redirects to the stenella portal for that client.
 `)
 		return
 	}
@@ -73,6 +97,8 @@ Routes stenella owns: / (homepage), /s/portal, /s/admin, /s/feed/**,
 		AdminPassword: *adminPass,
 		PublicBase:    *base,
 		Libs:          libs,
+		SiteHosts:     hostSites,
+		PlatformPath:  *platformPath,
 	})
 	if err != nil {
 		log.Fatalf("stenella: %v", err)

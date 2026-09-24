@@ -18,7 +18,9 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +48,19 @@ type Config struct {
 	// Libs are the four Emperor42 JS libraries, keyed by filename
 	// (veni.js, vidi.js, vici.js, vini.js), served at /s/static/lib/<name>.
 	Libs map[string][]byte
+	// SiteHosts maps a public domain (host:port stripped, lower-cased) to a
+	// client id whose hosted site is served at "/" on that host. This is how
+	// azzurro.tech becomes the azzurrotech client site without a client
+	// prefix in the URL.
+	//
+	// The platform keeps its own namespace on mapped hosts: anything under
+	// /s/ (portal, admin, feeds, shares, JS libraries) stays reachable, and
+	// PlatformPath redirects to the stenella portal for the mapped client.
+	SiteHosts map[string]string
+	// PlatformPath is the path on mapped hosts that redirects to the
+	// stenella platform (portal for the mapped client). Defaults to
+	// "/platform" when empty.
+	PlatformPath string
 }
 
 // Server is a configured stenella instance.
@@ -76,6 +91,12 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.AdminPassword == "" {
 		cfg.AdminPassword = "admin"
+	}
+	if cfg.PlatformPath == "" {
+		cfg.PlatformPath = "/platform"
+	}
+	if cfg.SiteHosts == nil {
+		cfg.SiteHosts = map[string]string{}
 	}
 	atpSvc, err := atpweb.NewATPService(atpweb.Options{
 		Port:          "8084",
@@ -123,9 +144,80 @@ func New(cfg Config) (*Server, error) {
 }
 
 // Handler returns the full HTTP handler: atp's middleware first, then
-// stenella's own mux for everything atp does not own.
+// stenella's own mux (wrapped in the virtual-host dispatcher) for everything
+// atp does not own.
 func (s *Server) Handler() http.Handler {
-	return s.atpSvc.Middleware(s.mux)
+	return s.atpSvc.Middleware(s.hostDispatch(s.mux))
+}
+
+// hostOnly normalises an HTTP Host header to a bare, lower-cased domain.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+// cloneReq returns a copy of r whose URL path is rewritten to newPath (the
+// query string is preserved) — used to forward a mapped-host request into atp's
+// public /c/{client}/... surface without touching the client-visible URL.
+func cloneReq(r *http.Request, newPath string) *http.Request {
+	r2 := r.Clone(r.Context())
+	u := *r.URL
+	u.Path = newPath
+	u.RawPath = ""
+	r2.URL = &u
+	r2.RequestURI = newPath
+	if u.RawQuery != "" {
+		r2.RequestURI += "?" + u.RawQuery
+	}
+	return r2
+}
+
+// hostDispatch implements virtual hosting: for hosts listed in
+// Config.SiteHosts the mapped client's hosted site (their song silo, served
+// via atp's public /c/{client}/... handler so usage metering and scoping
+// still apply) is served at "/", PlatformPath redirects to the stenella
+// platform, and everything under /s/ remains the platform's own namespace.
+//
+// atp's Middleware runs before this handler and already owns /api, /clients,
+// /c, /gw, /login and /health, so this only ever sees stenella's paths.
+func (s *Server) hostDispatch(next http.Handler) http.Handler {
+	plat := s.cfg.PlatformPath
+	if plat == "" {
+		plat = "/platform"
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		client, ok := s.cfg.SiteHosts[hostOnly(r.Host)]
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		p := r.URL.Path
+
+		// The documented "platform" endpoint: azzurro.tech/platform should
+		// land on the stenella platform automatically.
+		if p == plat || strings.HasPrefix(p, plat+"/") {
+			target := "/s/portal?client=" + url.QueryEscape(client)
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+			return
+		}
+
+		// The platform keeps its own namespace on mapped hosts.
+		if p == "/s" || strings.HasPrefix(p, "/s/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Everything else on a mapped host is the client's hosted site.
+		var newPath string
+		if p == "/" {
+			newPath = "/c/" + client + "/"
+		} else {
+			newPath = "/c/" + client + p
+		}
+		s.atp.Handler().ServeHTTP(w, cloneReq(r, newPath))
+	})
 }
 
 // Routes registers every stenella path.
@@ -142,6 +234,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /s/feed/{client}/items", s.handleFeedItemsPublic)
 	m.HandleFunc("GET /s/x/{id}", s.handleSharePage)
 	m.HandleFunc("GET /s/static/{file...}", s.handleStatic)
+	m.HandleFunc("GET /s/data/{client}/{table...}", s.handleSiteData)
 
 	// Client sessions.
 	m.HandleFunc("POST /s/api/client/login", s.handleClientLogin)
