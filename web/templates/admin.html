@@ -1,0 +1,46 @@
+{{define "admin"}}<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body data-page="admin">
+{{template "nav" .}}
+<main class="wrap">
+  <section class="identity panel">
+    <div>
+      <h1>Super Admin</h1>
+      <p class="muted" id="id-label">Platform overview, income and every client.</p>
+    </div>
+    <div class="id-actions"><span id="id-badge" class="badge hidden"></span></div>
+  </section>
+
+  <section id="summary-cards" class="cards small"></section>
+
+  <nav id="tabs" class="tabs">
+    <button data-tab="income" class="active">Income</button>
+    <button data-tab="clients">Clients</button>
+    <button data-tab="feeds">Feeds</button>
+    <button data-tab="secrets">Secrets</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <section id="panes" class="panes">
+    <div id="pane-income" class="pane active">
+      <div id="income-view" class="panel"></div>
+    </div>
+    <div id="pane-clients" class="pane">
+      <div class="toolbar"><button id="add-client-btn" class="btn primary">New client</button></div>
+      <div id="clients-list" class="list"></div>
+    </div>
+    <div id="pane-feeds" class="pane"><div id="feeds-view" class="panel"></div></div>
+    <div id="pane-secrets" class="pane">
+      <div class="toolbar">
+        <input type="text" id="secret-client" placeholder="client id">
+        <button id="add-secret-btn" class="btn primary">Add secret</button>
+      </div>
+      <div id="secrets-list" class="list"></div>
+    </div>
+    <div id="pane-settings" class="pane"><div id="settings-view" class="panel"></div></div>
+  </section>
+</main>
+{{template "scripts" .}}
+</body>
+</html>{{end}}

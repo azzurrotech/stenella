@@ -1,462 +1,173 @@
-# stenella (Data Aggregation Platform)
+# stenella — AzzurroTech Data Platform
 
-**MIT License © Azzurro Technology Inc.**
+**MIT License © Azzurro Technology Inc.** · standard library only · no external
+Go modules, no JS frameworks, no build tooling.
 
-## Overview
+stenella is the AzzurroTech data platform. It embeds **atp** (the orchestrator,
+which itself embeds **song**, **pod** and **shepherd**) in-process and uses it
+as middleware: every request flows through atp's auth, scoping, usage logging
+and billing layer exactly like a real client's would. Any atp feature can be
+managed from stenella's UI.
 
-stenella is a comprehensive data aggregation platform designed to collect, normalize, and consolidate data from multiple sources. It provides real-time data processing with web and mobile-friendly interfaces, seamlessly integrated with the ATP platform.
+On top of that, stenella owns:
 
-## Installation
+- **One feed out of many** — aggregate RSS 2.0, RSS 1.0 (RDF), Atom and
+  JSON-Feed sources into a single newest-first feed, with search, category and
+  source filters, de-duplication, retention pruning and OPML bulk import.
+- **Website hosting & management** — every client gets a siloed static site
+  (song store) served at `/c/{client}/`, managed from the portal file editor.
+- **A search/link homepage** — `/` is a live interface over everything hosted,
+  not a static file.
+- **Shareable links** — token-protected URLs (`/s/x/{id}?t=…`) that render an
+  item, a link, or a whole table (vidi cards), and `combined.xml`/`combined.atom`
+  feeds that can be dropped into any reader.
+- **Link tracking** — every feed element is a pod database row; relationships
+  between rows (and to external URLs) are materialized as real symlink junctions
+  on disk, written through atp's pod pass-through.
 
-### Prerequisites
-- Go 1.20+
-- PostgreSQL or MySQL database
-- Redis for caching (optional)
+## Layout
 
-### Installation Steps
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/azzurro-tech/stenella.git
-   cd stenella
-   ```
-
-2. Install Go dependencies:
-   ```bash
-   go mod download
-   ```
-
-3. Configure database connection:
-   ```bash
-   # Edit database configuration
-   cp .env.example .env
-   # Update .env with your database credentials
-   ```
-
-4. Start stenella:
-   ```bash
-   cd azzurrotech/stenella
-   go run .
-   ```
-
-5. Access stenella web interface:
-   ```
-   http://localhost:8081
-   http://localhost:8081/stenella/config
-   http://localhost:8081/stenella/admin
-   ```
-
-## Usage (Standalone)
-
-### Basic Operations
-
-**Data Source Management**
-```bash
-# Add a new data source
-curl -X POST http://localhost:8081/api/data/sources \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Weather API","url":"https://api.weather.com/data","type":"weather","enabled":true}'
-
-# List all data sources
-curl http://localhost:8081/api/data/sources
-
-# Get specific data source
-curl http://localhost:8081/api/data/sources/{source-id}
+```
+stenella/                 # this module (superproject)
+├── main.go               # flags + embedded templates/libs; port 8084 default
+├── atp/                  # submodule — the embedded orchestrator (song/pod/shepherd)
+├── static/               # veni, vidi, vici, vini — the four JS submodules
+│   ├── veni/             #   web-component identification & registration
+│   ├── vidi/             #   pod output rendering (cards + pagination)
+│   ├── vici/             #   cookies + client-side AES-256-GCM encryption
+│   └── vini/             #   workflows / data-passing management
+├── web/                  # stenella HTTP layer (pages, portal API, admin API)
+├── feed/                 # source management + combined-feed engine
+├── links/                # link junctions + token-protected shares
+├── billing/              # income aggregation from atp usage logs
+├── atpclient/            # in-process client for the embedded atp surface
 ```
 
-**Data Access**
-```bash
-# Get aggregated data
-curl http://localhost:8081/api/data
-
-# Get data with filters
-curl "http://localhost:8081/api/data?from=2024-01-01&to=2024-12-31&sources=weather,stock"
-
-# Export data
-curl http://localhost:8081/api/data/export?format=json
-```
-
-### API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Main stenella status page |
-| `/stenella` | GET | HTML config viewer |
-| `/stenella/config` | GET | View configuration |
-| `/stenella/config` | POST | Update configuration |
-| `/stenella/admin` | GET | HTML admin panel |
-| `/stenella/admin` | POST | Update admin settings |
-| `/api/data` | GET | Get aggregated data |
-| `/api/data/sources` | GET | List all data sources |
-| `/api/data/sources` | POST | Add new data source |
-| `/api/data/sources/{id}` | GET | Get specific data source |
-| `/api/data/sources/{id}` | PUT | Update data source |
-| `/api/data/sources/{id}` | DELETE | Remove data source |
-| `/api/data/export` | GET | Export aggregated data |
-| `/health` | GET | Health check |
-
-## Integration with ATP
-
-### Service Registration
-
-stenella registers with ATP as a data aggregation service:
-
-```go
-// Example stenella service registration
-package main
-
-import "github.com/gin-gonic/gin"
-
-func main() {
-    r := gin.Default()
-    
-    // Health check endpoint
-    r.GET("/health", func(c *gin.Context) {
-        c.JSON(200, gin.H{"status": "healthy"})
-    })
-    
-    // Data sources API
-    sources := r.Group("/api/data/sources")
-    {
-        sources.GET("/", getAllSources)
-        sources.POST("/", createSource)
-        sources.GET("/{id}", getSource)
-        sources.PUT("/{id}", updateSource)
-        sources.DELETE("/{id}", deleteSource)
-    }
-    
-    // Data aggregation API
-    data := r.Group("/api/data")
-    {
-        data.GET("/", getAggregatedData)
-        data.GET("/export", exportData)
-    }
-    
-    // Service registration with ATP
-    r.POST("/register", func(c *gin.Context) {
-        config := map[string]interface{}{
-            "name": "stenella",
-            "endpoint": "http://localhost:8081",
-            "health": "/health",
-            "data_endpoint": "/api/data",
-            "sources_endpoint": "/api/data/sources"
-        }
-        
-        response, err := registerWithATP(config)
-        if err != nil {
-            c.JSON(500, gin.H{"error": "registration failed"})
-            return
-        }
-        
-        c.JSON(200, response)
-    })
-    
-    r.Run(":8081")
-}
-```
-
-### Data Integration
-
-stenella integrates with ATP for centralized data management:
-
-```yaml
-# atp/config/integrations.yaml
-integrations:
-  azzurrotech:
-    stenella:
-      health_check: /health
-      data_source: /api/data
-      sources_endpoint: /api/data/sources
-      config_endpoint: /api/stenella/config
-      admin_endpoint: /api/stenella/admin
-      auth_required: true
-```
-
-### Data Processing Pipeline
-
-1. **Data Collection**: stenella collects data from multiple sources
-2. **Data Normalization**: Raw data is normalized to standard format
-3. **Data Storage**: Processed data is stored in database
-4. **Data Distribution**: Data is distributed through ATP APIs
-5. **Data Analytics**: ATP provides analytics and monitoring
-
-## Development Setup
-
-### Local Development
+## Building
 
 ```bash
-# Start stenella server
-cd azzurrotech/stenella
-go run .
-
-# Or with environment variables
-cd azzurrotech/stenella
-export STENELLA_PORT=8081
-export DB_HOST=localhost
-export DB_PORT=5432
-go run .
+go build -o stenella-server ./main.go
 ```
 
-### Testing
+`go.mod` is `require`-free: only our own modules (`atp`, and hence `pod`,
+`shepherd`, `song`) are involved, replaced by their submodule worktrees.
+`go.sum` is intentionally empty.
+
+## Running
 
 ```bash
-# Run all tests
-cd azzurrotech/stenella
-go test ./...
-
-# Run specific test packages
-cd azzurrotech/stenella
-go test ./internal/aggregator/...
-go test ./internal/sources/...
-
-# Run integration tests
-cd azzurrotech/stenella
-go test ./integration/...
-
-# Test API endpoints
-curl http://localhost:8081/health
-curl http://localhost:8081/api/data/sources
-curl "http://localhost:8081/api/data?from=2024-01-01&to=2024-12-31"
+export STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!'
+STENELLA_ADMIN_PASSWORD='change-me' ./stenella-server \
+  --root=/app/data --port=8084 --libs-dir=static
 ```
 
-### Building
+Flags (env fallbacks in parentheses):
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--port` | `8084` | listen port |
+| `--root` | `./data` | shared data root (atp stores, pod records, feeds, links, shares) |
+| `--secret` | *(required)* `$STENELLA_SECRET` | master AES/HMAC secret, ≥ 32 bytes |
+| `--admin-user` | `admin` | atp administrator username |
+| `--admin-pass` | *(required)* `$STENELLA_ADMIN_PASSWORD` | atp administrator password |
+| `--public-base` | `""` | absolute base URL for share links (e.g. `https://azzurro.tech`) |
+| `--libs-dir` | `static` | directory with the `veni/vidi/vici/vini` JS worktrees |
+
+## Web surfaces
+
+| Path | Who | What |
+|---|---|---|
+| `/` | public | search / link homepage over everything hosted |
+| `/s/portal?c={client}` | client | the client portal (feed, database, sites, links, shares, billing) |
+| `/s/admin` | admin | the super-admin console (clients, secrets, feeds, income) |
+| `/s/feed/{client}` | public | a client's combined feed as HTML |
+| `/s/feed/{client}/combined.xml` / `combined.atom` | public | the aggregator output for any RSS/Atom reader |
+| `/s/feed/{client}/items` | public | JSON item stream of a combined feed |
+| `/s/x/{id}?t={token}` | public | share page (item / link / vidi-rendered table) |
+| `/s/api/x/{id}?t={token}` | public | same share as JSON (vidi `dataSource`) |
+| `/c/{client}/` | public | the client's hosted website (song silo) |
+| `/login`, `/logout`, `/s/api/client/login` | — | admin + client sessions |
+
+### Portal API (client session or admin impersonation) — `client` query param
+
+- feeds: `GET/POST /s/api/portal/feeds`, `PUT/DELETE …/feeds/{id}`,
+  `POST …/feeds/{id}/fetch`, `POST …/import` (OPML), `POST …/refresh`,
+  `GET …/items`
+- database (pod): `GET …/db/tables`, `GET/POST …/db/table`, `DELETE …/db/record`
+- links: `GET/POST …/links`, `DELETE …/links/{id}`
+- shares: `GET/POST …/shares`, `DELETE …/shares/{id}`
+- sites (song): `GET …/sites/meta`, `GET …/sites/files`, `POST/PUT …/sites/file`,
+  `DELETE …/sites/file`
+- vault: `GET/POST/DELETE …/secrets`, `GET/PUT …/payment`
+- billing: `GET …/billing`, `GET …/usage`
+- keys (shepherd): `POST …/keys`, `GET …/keys/verify`, `POST …/revoke`
+- identity: `GET …/whoami`, `POST /s/api/client/login|logout`
+
+### Admin API (atp session)
+
+`GET /s/api/admin/summary|income|clients|feeds|config`, `POST /s/api/admin/client`,
+`PUT/DELETE /s/api/admin/client/{id}`, `GET/POST/DELETE /s/api/admin/secrets`,
+`PUT /s/api/admin/income`, `PUT /s/api/admin/config`.
+
+## Storage layout under `--root`
+
+```
+data/
+├── clients.json            # atp client registry (atp-managed)
+├── secrets/                # AES-256-GCM vault (atp-managed)
+├── logs/                   # per-client usage logs (atp-managed)
+├── pod/{client}/{table}/   # pod filesystem database — records are <id>.xml
+├── song/{client}/          # siloed static sites
+├── stenella/
+│   ├── feeds/{client}.json # feed source configs
+│   ├── cache/{source}.json # fetched item caches (retention-pruned)
+│   ├── links/{client}/{id}/# link junctions — symlinks to the pod records
+│   └── shares/
+│       ├── index.json      # public share id → client index
+│       └── {client}/{id}/  # share junctions — symlink to the shared record/table
+```
+
+Links and shares are **physical**: a link junction holds `from.xml` → and
+`to.xml` → symlinks into `data/pod/{client}/items/`; a share junction's `target`
+is a symlink to the shared record or table directory. A stale symlink is the
+on-disk signal that the pointed-at row moved or died — that's the "tracking".
+
+## Front end
+
+Portal, admin, feed and share pages are plain HTML rendered from
+`go:embed`-ed templates with vanilla `app.js`. The four Emperor42 libraries
+(`static/{veni,vidi,vici,vini}`) are loaded into memory at startup
+(`--libs-dir`) and served at `/s/static/…`:
+
+- **veni** discovers and registers custom elements;
+- **vidi** renders pod tables supplied by `/s/api/x/{id}?t=…` shares;
+- **vici** owns all cookies and client-side encryption;
+- **vini** drives multi-step flows (portal login, wizards) with persisted
+  `vini_workflows` progress.
+
+## Tests
 
 ```bash
-# Build for production
-cd azzurrotech/stenella
-go build -o stenella ./...
-
-# Build with specific options
-cd azzurrotech/stenella
-go build -ldflags="-port=8081" -o stenella ./...
-
-# Build with database configuration
-cd azzurrotech/stenella
-DB_HOST=prod-db.go DB_PORT=5432 go run ./cmd
+go test ./...        # feed parsing/combine, link+share junctions, web walkthrough
+go test -race ./...  # same, under the race detector
 ```
 
-## Performance Optimization
+The web test drives a full admin → client → portal → feed → link → share →
+billing → income cycle against an in-process atp service and verifies the
+symlink junctions on disk.
 
-### Data Processing
+## Container
 
-- **Streaming Processing**: Efficient streaming of large data sets
-- **Parallel Processing**: Parallel data processing for performance
-- **Caching**: Multi-level caching for frequently accessed data
-- **Compression**: Data compression for reduced storage
-- **Load Balancing**: Horizontal scaling support
-
-### Database Optimization
-
-```go
-// Database optimization example
-var db *sql.DB
-
-func initDatabase() {
-    var err error
-    db, err = sql.Open("postgres", getDatabaseURL())
-    if err != nil {
-        log.Fatal("Database connection failed")
-    }
-    
-    // Set connection pool settings
-    db.SetMaxOpenConns(100)
-    db.SetMaxIdleConns(10)
-    db.SetConnMaxLifetime(time.Hour)
-    
-    // Create indexes for performance
-    createIndexes()
-}
-
-func createIndexes() {
-    queries := []string{
-        "CREATE INDEX IF NOT EXISTS idx_data_sources_type ON data_sources(type)",
-        "CREATE INDEX IF NOT EXISTS idx_data_sources_enabled ON data_sources(enabled)",
-        "CREATE INDEX IF NOT EXISTS idx_aggregated_data_date ON aggregated_data(date)",
-    }
-    
-    for _, query := range queries {
-        _, err := db.Exec(query)
-        if err != nil {
-            log.Printf("Error creating index: %v", err)
-        }
-    }
-}
-```
-
-## Monitoring
-
-### Health Monitoring
+`Dockerfile` builds the same binary (`EXPOSE 8084`). Run with:
 
 ```bash
-# stenella health check
-curl http://localhost:8081/health
-
-# Data sources health
-curl http://localhost:8081/api/data/sources
-
-# Data aggregation health
-curl http://localhost:8081/api/data
-
-# Configuration health
-curl http://localhost:8081/stenella/config
+docker build -t stenella .
+docker run --rm -p 8084:8084 \
+  -e STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!' \
+  -e STENELLA_ADMIN_PASSWORD='change-me' \
+  stenella
 ```
 
-### Metrics Collection
-
-stenella collects and reports:
-
-- **Data Source Status**: All configured data sources status
-- **Data Quality**: Data validation and quality metrics
-- **Processing Performance**: Data aggregation performance
-- **Database Performance**: Database query performance
-- **API Performance**: HTTP request/response metrics
-- **Error Rates**: Data processing error tracking
-
-## Security Features
-
-### stenella Security
-
-- **Input Validation**: Validates and sanitizes all incoming data
-- **Access Control**: Role-based access to data sources and endpoints
-- **Encryption**: Encrypts sensitive data in transit and storage
-- **Authentication**: Secure authentication for administrative functions
-- **Audit Trails**: Comprehensive logging of all data access and modifications
-- **Rate Limiting**: Prevents abuse of API endpoints
-- **CORS Support**: Cross-origin resource sharing configuration
-
-### Data Security
-
-stenella provides secure data handling:
-
-- **Data Encryption**: AES-256 encryption for sensitive data
-- **Data Validation**: Comprehensive data validation and sanitization
-- **Access Control**: Granular access control for data sources
-- **Audit Logging**: Complete audit trails for all data operations
-- **Backup**: Automated data backup and recovery
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Data Source Connection Failed**
-   ```bash
-   # Check stenella logs
-   $ tail -f stenella.log
-   
-   # Test database connection
-   $ psql -h localhost -U username -d database
-   
-   # Check stenella health
-   $ curl http://localhost:8081/health
-   ```
-
-2. **Data Aggregation Slow**
-   ```bash
-   # Check data source status
-   $ curl http://localhost:8081/api/data/sources
-   
-   # Check stenella configuration
-   $ curl http://localhost:8081/stenella/config
-   
-   # Monitor stenella logs
-   $ tail -f stenella.log
-   ```
-
-3. **Data Not Loading**
-   ```bash
-   # Check data source configuration
-   $ curl http://localhost:8081/api/data/sources/{id}
-   
-   # Test data source connection
-   $ curl "http://localhost:8081/api/data/sources/{id}/test"
-   
-   # Check stenella health
-   $ curl http://localhost:8081/health
-   ```
-
-### Debugging Commands
-
-```bash
-# Enable debug logging
-export STENELLA_LOG_LEVEL=debug
-
-# Check stenella logs
-$ tail -f stenella.log
-
-# Monitor system resources
-$ top
-$ free -h
-
-# Test data sources
-$ curl http://localhost:8081/api/data/sources
-$ curl http://localhost:8081/api/data
-
-# Check stenella configuration
-$ curl http://localhost:8081/stenella/config
-```
-
-## API Specifications
-
-### High Maturity API (REST-based)
-
-```http
-GET /api/data?from=2024-01-01&to=2024-12-31& sources=source1,source2
-GET /api/data/sources
-POST /api/data/sources
-GET /api/data/sources/{id}
-PUT /api/data/sources/{id}
-DELETE /api/data/sources/{id}
-GET /api/data/export
-GET /health
-```
-
-### stenella-specific Endpoints
-
-```http
-GET /stenella/config - View stenella configuration
-POST /stenella/config - Update stenella configuration
-GET /stenella/admin - View admin information
-POST /stenella/admin - Modify admin settings
-```
-
-## Future Enhancements
-
-### Planned Features
-
-1. **Advanced Analytics**: ML-powered data analysis and predictions
-2. **Real-time Processing**: Live data streaming and processing
-3. **Advanced Visualization**: Data visualization and charting
-4. **Multi-source Integration**: More data source connectors
-5. **Automated Data Quality**: Automated data validation and cleaning
-
-### Roadmap
-
-- **Phase 1**: Basic data collection and aggregation
-- **Phase 2**: Data normalization and storage
-- **Phase 3**: Advanced analytics and visualization
-- **Phase 4**: Real-time processing and automation
-
-## Conclusion
-
-stenella provides a comprehensive data aggregation platform that unifies data from multiple sources into a single, cohesive system. It offers robust security, comprehensive API functionality, and production-ready architecture for enterprise data integration needs.
-
-Key benefits:
-
-- **Data Integration**: Unified data collection from multiple sources
-- **Data Processing**: Real-time data normalization and processing
-- **Data Storage**: Efficient database storage and management
-- **Data Access**: RESTful API for data access and management
-- **Security**: Comprehensive security features and controls
-- **Monitoring**: Real-time monitoring and analytics
-- **Scalability**: Supports large-scale data processing
-
-The stenella implementation is production-ready and can be easily integrated into enterprise applications with comprehensive data aggregation and security features.
-
----
-
-*Document Version: 1.0*
-*Created: 2026-08-25*
-*Last Updated: 2026-08-25*
-*Status: Production Ready*
-
-**License:** MIT License © Azzurro Technology Inc.
+TLS termination is expected at a Caddy reverse proxy in front (see
+`super/stenella_atp/Caddyfile` for the historical routing table; the canonical
+service→port map is in the workspace AGENTS.md, §8).

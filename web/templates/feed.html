@@ -1,0 +1,32 @@
+{{define "feed"}}<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body data-page="feed" data-client="{{.Client}}" data-has-more="{{.HasMore}}">
+{{template "nav" .}}
+<main class="wrap">
+  <header class="pagehead">
+    <h1>{{.Title}}</h1>
+    <p class="muted">{{.Total}} item{{if ne .Total 1}}s{{end}} from every source of <code>{{.Client}}</code>.
+      <a href="{{.RSSURL}}">RSS</a> · <a href="{{.AtomURL}}">Atom</a></p>
+    <form id="feed-search" class="searchbox" method="get" action="/s/feed/{{.Client}}" autocomplete="off">
+      <input type="search" name="q" value="{{.Q}}" placeholder="Search this feed…">
+    </form>
+  </header>
+
+  <ol id="feed-items" class="feed" start="1">
+    {{range .Items}}
+    <li class="feed-item" data-id="{{.ID}}">
+      <h2><a href="{{.Link}}" rel="noopener" target="_blank">{{.Title}}</a></h2>
+      <p class="muted">{{.SourceName}} · {{.Published.Format "2006-01-02 15:04"}} · {{if .Author}}{{.Author}}{{end}}</p>
+      <p class="summary">{{.Summary}}</p>
+    </li>
+    {{else}}
+    <li class="muted">No items match. Subscribe a source from the client portal.</li>
+    {{end}}
+  </ol>
+
+  {{if .HasMore}}<div id="feed-more-wrap" class="center"><button id="feed-more" class="btn" type="button">Load more</button></div>{{end}}
+</main>
+{{template "scripts" .}}
+</body>
+</html>{{end}}

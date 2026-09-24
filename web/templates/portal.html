@@ -1,0 +1,90 @@
+{{define "portal"}}<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body data-page="portal" data-client="{{.Client}}">
+{{template "nav" .}}
+<main class="wrap">
+  <section class="identity panel">
+    <div>
+      <h1>Client Portal</h1>
+      <p class="muted" id="id-label">Sign in to manage feeds, links, storage and billing.</p>
+    </div>
+    <div class="id-actions">
+      <span id="id-badge" class="badge hidden"></span>
+      <button id="login-btn" class="btn">Sign in</button>
+    </div>
+  </section>
+
+  <form id="login-form" class="panel hidden">
+    <h2>Portal sign in</h2>
+    <label>Client<input type="text" name="client" id="login-client" value="{{.Client}}" placeholder="client id"></label>
+    <label>Portal secret<input type="password" name="secret" id="login-secret" autocomplete="current-password" placeholder="your portal secret"></label>
+    <div class="row">
+      <button class="btn primary" type="submit">Sign in</button>
+      <button type="button" id="login-cancel" class="btn ghost">Cancel</button>
+    </div>
+  </form>
+
+  <nav id="tabs" class="tabs hidden">
+    <button data-tab="feeds" class="active">Feeds</button>
+    <button data-tab="items">Items</button>
+    <button data-tab="links">Links</button>
+    <button data-tab="shares">Shares</button>
+    <button data-tab="db">Database</button>
+    <button data-tab="sites">Site</button>
+    <button data-tab="secrets">Secrets</button>
+    <button data-tab="billing">Billing</button>
+    <button data-tab="security">Security</button>
+  </nav>
+
+  <section id="panes" class="panes">
+    <div id="pane-feeds" class="pane active">
+      <div class="toolbar"><button id="add-feed-btn" class="btn primary">Add feed</button></div>
+      <div id="feeds-list" class="list"></div>
+    </div>
+    <div id="pane-items" class="pane">
+      <div class="toolbar">
+        <input type="search" id="items-q" placeholder="Search items…">
+        <button id="refresh-feed-btn" class="btn">Refresh all</button>
+      </div>
+      <div id="items-list" class="feed"></div>
+      <div id="items-more" class="center hidden"><button id="items-next" class="btn">Load more</button></div>
+    </div>
+    <div id="pane-links" class="pane">
+      <div class="toolbar"><button id="add-link-btn" class="btn primary">New link</button></div>
+      <div id="links-list" class="list"></div>
+    </div>
+    <div id="pane-shares" class="pane">
+      <div class="toolbar"><button id="add-share-btn" class="btn primary">New share</button></div>
+      <div id="shares-list" class="list"></div>
+    </div>
+    <div id="pane-db" class="pane">
+      <div class="toolbar">
+        <select id="db-tables"></select>
+        <input type="search" id="db-q" placeholder="Search records…">
+        <button id="db-add-btn" class="btn primary">Add record</button>
+      </div>
+      <div id="db-records" class="table-wrap"></div>
+    </div>
+    <div id="pane-sites" class="pane">
+      <div class="toolbar"><button id="add-file-btn" class="btn primary">New file</button></div>
+      <div id="sites-list" class="list"></div>
+    </div>
+    <div id="pane-secrets" class="pane">
+      <div class="toolbar"><button id="add-secret-btn" class="btn primary">Add secret</button></div>
+      <div id="secrets-list" class="list"></div>
+    </div>
+    <div id="pane-billing" class="pane">
+      <div id="billing-view" class="panel"></div>
+      <div class="toolbar"><button id="edit-payment-btn" class="btn">Edit payment info</button></div>
+      <div id="payment-view" class="panel"></div>
+    </div>
+    <div id="pane-security" class="pane">
+      <div class="toolbar"><button id="issue-key-btn" class="btn primary">Issue key</button></div>
+      <div id="keys-list" class="list"></div>
+    </div>
+  </section>
+</main>
+{{template "scripts" .}}
+</body>
+</html>{{end}}

@@ -1,0 +1,21 @@
+{{define "head"}}<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · stenella</title>
+<link rel="stylesheet" href="/s/static/style.css">
+{{end}}
+
+{{define "nav"}}<header class="topbar">
+  <a class="brand" href="/">⌘ stenella</a>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/s/admin">Super Admin</a>
+  </nav>
+</header>
+{{end}}
+
+{{define "scripts"}}<script src="/s/static/lib/veni.js"></script>
+<script src="/s/static/lib/vidi.js"></script>
+<script src="/s/static/lib/vici.js"></script>
+<script src="/s/static/lib/vini.js"></script>
+<script src="/s/static/app.js"></script>
+{{end}}

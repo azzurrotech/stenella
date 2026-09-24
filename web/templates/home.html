@@ -1,0 +1,32 @@
+{{define "home"}}<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body data-page="home">
+{{template "nav" .}}
+<main class="wrap">
+  <section class="hero">
+    <h1>Everything hosted, one place.</h1>
+    <p>Search or pick a front door — client sites, combined feeds, consoles.</p>
+    <form id="search-form" class="searchbox" role="search" autocomplete="off">
+      <input id="q" type="search" placeholder="Search clients, sites, feeds…">
+    </form>
+  </section>
+  <section id="cards" class="cards">
+    {{range .Cards}}
+    <article class="card" data-search="{{.ID}} {{.Name}} {{.Notes}}">
+      <h2><a href="{{.SiloURL}}">{{.Name}}</a></h2>
+      <p class="muted">{{.ID}} · {{.Notes}}</p>
+      <div class="actions">
+        <a href="{{.SiloURL}}">Site</a>
+        <a href="/s/portal?client={{.ID}}">Portal</a>
+        <a href="{{.FeedURL}}">Feed · {{.Items}}</a>
+      </div>
+    </article>
+    {{else}}
+    <p class="muted">No clients yet. Sign into the <a href="/s/admin">super admin</a> to create one.</p>
+    {{end}}
+  </section>
+</main>
+{{template "scripts" .}}
+</body>
+</html>{{end}}

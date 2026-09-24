@@ -1,0 +1,46 @@
+{{define "share"}}<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body data-page="share" data-kind="{{.Kind}}" data-json="{{.JSONURL}}">
+{{template "nav" .}}
+<main class="wrap">
+  <header class="pagehead">
+    <h1>{{.ShareTitle}}</h1>
+    <p class="muted">Shared from <code>{{.Client}}</code>{{if .Expires}} · expires {{.Expires}}{{end}}</p>
+  </header>
+
+  {{if eq .Kind "item"}}
+  <article class="share-item">
+    <h2>{{if .Item.Link}}<a href="{{.Item.Link}}" rel="noopener" target="_blank">{{.Item.Title}}</a>{{else}}{{.Item.Title}}{{end}}</h2>
+    <p class="muted">{{.Item.Source}} · {{.Item.Author}} · {{.Item.Published}}</p>
+    {{if .Item.Summary}}<p>{{.Item.Summary}}</p>{{end}}
+    {{if .Item.Content}}<div class="article-body">{{safe .Item.Content}}</div>{{end}}
+  </article>
+  {{end}}
+
+  {{if eq .Kind "link"}}
+  <section class="share-link">
+    <div class="node">
+      {{if .From.title}}<a href="{{.From.link}}">{{.From.title}}</a>{{else}}{{.From.id}}{{end}}
+    </div>
+    <div class="relation">
+      <span class="pill">{{.Relation}}</span>
+      {{if .Label}}<p class="muted">{{.Label}}</p>{{end}}
+    </div>
+    <div class="node">
+      {{if and .To .To.link}}<a href="{{.To.link}}">{{.To.title}}</a>{{else}}{{if .To}}{{.To.title}}{{end}}{{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{if eq .Kind "table"}}
+  <section class="share-table">
+    <p class="muted">Table <code>{{.Table}}</code> — {{.Count}} records.</p>
+    <div id="vidi-cards-container" class="cards"></div>
+    <div id="vidi-pagination" class="pagination"></div>
+  </section>
+  {{end}}
+</main>
+{{template "scripts" .}}
+</body>
+</html>{{end}}
