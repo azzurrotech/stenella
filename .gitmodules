@@ -1,0 +1,15 @@
+[submodule "atp"]
+	path = atp
+	url = https://github.com/azzurrotech/atp.git
+[submodule "veni"]
+	path = static/veni
+	url = https://github.com/emperor42/veni.git
+[submodule "vidi"]
+	path = static/vidi
+	url = https://github.com/emperor42/vidi.git
+[submodule "vici"]
+	path = static/vici
+	url = https://github.com/emperor42/vici.git
+[submodule "vini"]
+	path = static/vini
+	url = https://github.com/emperor42/vini.git
