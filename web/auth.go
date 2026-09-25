@@ -93,6 +93,10 @@ func (s *Server) clientGate(fn http.HandlerFunc) http.Handler {
 			s.writeErr(w, http.StatusBadRequest, "missing client")
 			return
 		}
+		if !validSiteClientID(client) {
+			s.writeErr(w, http.StatusBadRequest, "invalid client")
+			return
+		}
 		if err := s.requireClient(r, client); err != nil {
 			if errors.Is(err, errUnauthorized) {
 				s.writeErr(w, http.StatusUnauthorized, "sign in to access this portal")
@@ -156,6 +160,16 @@ func (s *Server) isAdmin(r *http.Request) bool {
 	return s.atp.AdminValid("", cookies)
 }
 
+func requestIsHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
+}
+
 // ---- login handlers -----------------------------------------------------------
 
 // handleClientLogin authenticates a client with the value of their "portal"
@@ -175,8 +189,12 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "client and secret are required")
 		return
 	}
-	if _, err := s.atp.GetClient(req.Client); err != nil {
-		s.writeErr(w, http.StatusUnauthorized, "unknown client")
+	if !validSiteClientID(req.Client) {
+		s.writeErr(w, http.StatusBadRequest, "invalid client")
+		return
+	}
+	if !s.clientExists(req.Client) {
+		s.writeErr(w, http.StatusUnauthorized, "unknown or disabled client")
 		return
 	}
 	got := ""
@@ -195,7 +213,7 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	token, sess := s.sess.put("client "+req.Client, req.Client)
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: int(sessionTTL.Seconds()),
+		SameSite: http.SameSiteLaxMode, Secure: requestIsHTTPS(r), MaxAge: int(sessionTTL.Seconds()),
 	})
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "client": req.Client, "label": sess.label, "expires": sess.expires.Format(time.RFC3339),
@@ -207,7 +225,7 @@ func (s *Server) handleClientLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		s.sess.del(c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: requestIsHTTPS(r), MaxAge: -1})
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

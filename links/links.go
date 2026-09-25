@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,24 +79,29 @@ func SharesTable(client string) string { return client + "/shares" }
 // Create validates both ends through atp, stores the link record in the
 // client's pod namespace, and materializes the symlink junction.
 func (s *Store) Create(client, fromID, toKind, toID, toURL, relation, label string) (*Link, error) {
-	if client == "" {
-		return nil, errors.New("client is required")
+	if !validIdentifier(client) || !validIdentifier(fromID) {
+		return nil, errors.New("client and from item are required")
 	}
 	// Validate the from item (a feed element must exist).
 	if _, err := s.atp.GetRecord(ItemsTable(client), fromID); err != nil {
 		return nil, fmt.Errorf("from item %q: %w", fromID, err)
 	}
-	kind := strings.ToLower(toKind)
+	kind := strings.ToLower(strings.TrimSpace(toKind))
+	toURL = strings.TrimSpace(toURL)
 	if kind != ToItem && kind != ToURL {
 		return nil, errors.New("to_kind must be \"item\" or \"url\"")
 	}
 	switch kind {
 	case ToItem:
+		if !validIdentifier(toID) {
+			return nil, errors.New("to item is required")
+		}
 		if _, err := s.atp.GetRecord(ItemsTable(client), toID); err != nil {
 			return nil, fmt.Errorf("to item %q: %w", toID, err)
 		}
 	case ToURL:
-		if !strings.HasPrefix(toURL, "http://") && !strings.HasPrefix(toURL, "https://") {
+		u, err := url.Parse(strings.TrimSpace(toURL))
+		if err != nil || u.User != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || strings.ContainsAny(toURL, "\r\n\t") {
 			return nil, errors.New("to_url must be an http(s) url")
 		}
 	}
@@ -204,6 +210,9 @@ func recordSymlink(dir, name, root, client, table, id string) error {
 // List returns a client's links, newest first, enriched with the titles of
 // both ends.
 func (s *Store) List(client string, limit, offset int) ([]Link, error) {
+	if !validIdentifier(client) {
+		return nil, errors.New("invalid client")
+	}
 	tq := atpclient.TableQuery{OrderBy: "created", Desc: true}
 	if limit > 0 {
 		tq.Limit = limit
@@ -248,6 +257,9 @@ func (s *Store) List(client string, limit, offset int) ([]Link, error) {
 
 // Get reads a single link record.
 func (s *Store) Get(client, id string) (*Link, error) {
+	if !validIdentifier(client) || !validIdentifier(id) {
+		return nil, errors.New("invalid link reference")
+	}
 	rec, err := s.atp.GetRecord(LinksTable(client), id)
 	if err != nil {
 		return nil, err
@@ -260,6 +272,9 @@ func (s *Store) Get(client, id string) (*Link, error) {
 
 // Delete removes the pod record and the junction directory (symlinks first).
 func (s *Store) Delete(client, id string) error {
+	if !validIdentifier(client) || !validIdentifier(id) {
+		return errors.New("invalid link reference")
+	}
 	if err := s.atp.DeleteRecord(LinksTable(client), id); err != nil {
 		return err
 	}
@@ -270,6 +285,21 @@ func (s *Store) Delete(client, id string) error {
 	_ = os.Remove(filepath.Join(dir, "manifest.json"))
 	_ = os.Remove(dir)
 	return nil
+}
+
+func validIdentifier(value string) bool {
+	if value == "" || len(value) > 256 || value == "." || value == ".." {
+		return false
+	}
+	if strings.ContainsAny(value, "/\\?#%") || strings.ContainsAny(value, "\r\n\t") {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func safe(s string) string {

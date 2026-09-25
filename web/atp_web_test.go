@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,38 @@ func mustDecode(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
 		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+}
+
+func TestPortalDBRejectsTableNamespaceTraversal(t *testing.T) {
+	s, _ := newTestWeb(t)
+	admin := adminLogin(t, s.Handler())
+	if err := s.atp.CreateClient("acme", "Acme", ""); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := s.atp.CreateTable("acme/notes", []string{"body"}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	for _, table := range []string{"../other", "notes/../other", `notes\\other`, "notes%2fother"} {
+		t.Run("query_"+table, func(t *testing.T) {
+			rec := webReq(t, s.Handler(), http.MethodGet, "/s/api/portal/db/table?client=acme&table="+url.QueryEscape(table), "", []*http.Cookie{admin})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("query table %q: got %d, want 400", table, rec.Code)
+			}
+		})
+		t.Run("insert_"+table, func(t *testing.T) {
+			rec := webReq(t, s.Handler(), http.MethodPost, "/s/api/portal/db/table?client=acme", `{"table":"`+table+`","fields":{"body":"x"}}`, []*http.Cookie{admin})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("insert table %q: got %d, want 400", table, rec.Code)
+			}
+		})
+		t.Run("delete_"+table, func(t *testing.T) {
+			rec := webReq(t, s.Handler(), http.MethodDelete, "/s/api/portal/db/record?client=acme&table="+url.QueryEscape(table)+"&id=anything", "", []*http.Cookie{admin})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("delete table %q: got %d, want 400", table, rec.Code)
+			}
+		})
 	}
 }
 

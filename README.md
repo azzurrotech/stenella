@@ -72,6 +72,8 @@ Flags (env fallbacks in parentheses):
 | `--admin-pass` | *(required)* `$STENELLA_ADMIN_PASSWORD` | atp administrator password |
 | `--public-base` | `""` | absolute base URL for share links (e.g. `https://azzurro.tech`) |
 | `--libs-dir` | `static` | directory with the `veni/vidi/vici/vini` JS worktrees |
+| `--host-site` | azzurro.tech and www.azzurro.tech | map a public host to a client site at `/`; repeatable (`host=client`) |
+| `--platform-path` | `/platform` | mapped-host path that redirects to that client's portal |
 
 ## Web surfaces
 
@@ -82,11 +84,34 @@ Flags (env fallbacks in parentheses):
 | `/s/admin` | admin | the super-admin console (clients, secrets, feeds, income) |
 | `/s/feed/{client}` | public | a client's combined feed as HTML |
 | `/s/feed/{client}/combined.xml` / `combined.atom` | public | the aggregator output for any RSS/Atom reader |
-| `/s/feed/{client}/items` | public | JSON item stream of a combined feed |
+| `/s/feed/{client}/items` | public | JSON item stream of a combined feed (`q`, `category`, `source`, `since`, `page`, `pageSize`) |
 | `/s/x/{id}?t={token}` | public | share page (item / link / vidi-rendered table) |
 | `/s/api/x/{id}?t={token}` | public | same share as JSON (vidi `dataSource`) |
 | `/c/{client}/` | public | the client's hosted website (song silo) |
 | `/login`, `/logout`, `/s/api/client/login` | — | admin + client sessions |
+
+On a host configured with `--host-site`, the client silo is served at `/`;
+`/s/**` remains platform-owned and the normalized `--platform-path` redirects
+to `/s/portal?client={client}`. Host matching ignores case, a trailing DNS dot,
+and any valid numeric port. Only the platform path and its `/`-delimited descendants
+redirect, so a page such as `/platformish` remains a client-site URL. The host
+dispatcher runs before ATP: a mapped host cannot address another client's
+`/c/{client}/...` silo, and disabled clients are not publicly served.
+
+### Honest integration boundaries
+
+- The `azzurrotech` checkout is a browser-local VINI demonstration. It does not
+  capture payment, create a server-side order, send an invoice, or provide a
+  consumer/WooCommerce account system. A real purchase requires a separately
+  implemented server-side order and payment flow.
+- The public site-data endpoint is read-only JSON for the named client's pod
+  namespace. Management tables and share tokens are not public; unsafe path
+  segments are rejected before the HTTP mux can normalize them.
+- RSS/Atom and the JSON item endpoint are the supported public content APIs.
+  WordPress `wp-json`, WooCommerce, and oEmbed endpoints are not implemented.
+- The four Emperor42 browser libraries are standard-library/static assets. The
+  optional Go demos under `static/` are developer services: they default to
+  loopback, and a non-loopback bind requires their documented API token.
 
 ### Portal API (client session or admin impersonation) — `client` query param
 

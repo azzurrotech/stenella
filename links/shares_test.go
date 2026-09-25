@@ -124,6 +124,12 @@ func TestShareValidationAndExpiry(t *testing.T) {
 	if _, err := s.Create("", ShareItem, itemID, "", 0); err == nil {
 		t.Errorf("empty client should fail")
 	}
+	// Namespace/path traversal is rejected before the admin-backed atp query.
+	for _, target := range []string{"../other", `..\\other`, "a/b"} {
+		if _, err := s.Create("acme", ShareTable, target, "", 0); err == nil {
+			t.Errorf("unsafe share target %q should fail", target)
+		}
+	}
 
 	// Expiry logic on the value object.
 	now := time.Now().UTC()

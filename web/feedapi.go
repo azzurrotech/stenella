@@ -6,6 +6,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"sort"
+	"strings"
 	"time"
 
 	"azzurrotech/stenella/atpclient"
@@ -26,6 +28,228 @@ func (s *Server) feedTitle(client string) string {
 		}
 	}
 	return name + " — combined feed"
+}
+
+// postsFeedSource is the synthetic source used for posts published in a
+// client's pod table. Keeping it distinct from configured external sources
+// lets the public feed include a fresh deployment's content without pretending
+// that the posts table is an RSS source.
+const postsFeedSource = "posts"
+
+const maxCombinedItems = 10000
+
+// combinedFeed merges configured source caches with the client's public posts
+// table. The feed engine intentionally knows only about configured sources;
+// the web layer owns the pod bridge, so it applies the same filtering and
+// pagination semantics to both kinds of content.
+func (s *Server) combinedFeed(client string, q feed.Query) feed.Page {
+	all := make([]feed.Item, 0, 64)
+	seen := make(map[string]bool)
+
+	// Fetch enough configured items to merge and paginate in one place. The
+	// engine already applies Q/Category/Since/Source filtering for this query.
+	if q.Source == "" || q.Source != postsFeedSource {
+		cacheQuery := q
+		cacheQuery.Page = 1
+		cacheQuery.PageSize = maxCombinedItems
+		for _, item := range s.feeds.Combined(client, cacheQuery).Items {
+			if !seen[item.ID] {
+				seen[item.ID] = true
+				all = append(all, item)
+			}
+		}
+	}
+
+	if q.Source == "" || q.Source == postsFeedSource {
+		for _, item := range s.postFeedItems(client) {
+			if !postMatches(item, q) || seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+			all = append(all, item)
+		}
+	}
+
+	sort.SliceStable(all, func(i, j int) bool {
+		a, b := feedItemTime(all[i]), feedItemTime(all[j])
+		if !a.Equal(b) {
+			return a.After(b)
+		}
+		return all[i].ID < all[j].ID
+	})
+
+	total := len(all)
+	pageSize := q.PageSize
+	if pageSize <= 0 {
+		pageSize = feed.PageSizeDefault()
+	}
+	page := q.Page
+	if page < 1 {
+		page = 1
+	}
+	start := (page - 1) * pageSize
+	if start < 0 || start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end < start || end > total {
+		end = total
+	}
+	return feed.Page{
+		Items:   all[start:end],
+		Total:   total,
+		Page:    page,
+		HasMore: end < total,
+	}
+}
+
+func feedItemTime(item feed.Item) time.Time {
+	if !item.Published.IsZero() {
+		return item.Published
+	}
+	if !item.Updated.IsZero() {
+		return item.Updated
+	}
+	return item.Fetched
+}
+
+// postFeedItems converts a client's posts table into normalized feed items.
+// Missing tables are normal for a new client, so a query error simply yields
+// no local items while configured external sources remain usable.
+func (s *Server) postFeedItems(client string) []feed.Item {
+	const pageSize = 500
+	recs := make([]map[string]string, 0)
+	for offset := 0; offset < maxCombinedItems; offset += pageSize {
+		batch, count, err := s.atp.QueryTable(client+"/posts", atpclient.TableQuery{
+			Limit:   pageSize,
+			Offset:  offset,
+			OrderBy: "date",
+			Desc:    true,
+		})
+		if err != nil {
+			return nil
+		}
+		recs = append(recs, batch...)
+		if len(batch) == 0 || offset+len(batch) >= count {
+			break
+		}
+	}
+
+	now := time.Now().UTC()
+	out := make([]feed.Item, 0, len(recs))
+	for _, rec := range recs {
+		id := strings.TrimSpace(rec["id"])
+		title := strings.TrimSpace(rec["title"])
+		if id == "" || title == "" {
+			continue
+		}
+		slug := strings.TrimSpace(rec["slug"])
+		if slug == "" {
+			slug = id
+		}
+		linkPath := "/post.html?slug=" + url.QueryEscape(slug)
+		link := linkPath
+		if s.baseURL != "" {
+			link = s.baseURL + linkPath
+		}
+		published := parsePostTime(firstPostValue(rec, "date", "published", "created"))
+		updated := parsePostTime(firstPostValue(rec, "updated", "date", "published"))
+		if updated.IsZero() {
+			updated = published
+		}
+		if published.IsZero() {
+			published = now
+		}
+		categories := postCategories(rec)
+		out = append(out, feed.Item{
+			ID:         "post:" + id,
+			SourceID:   postsFeedSource,
+			SourceName: "Posts",
+			Title:      title,
+			Link:       link,
+			GUID:       "post:" + id,
+			Summary:    strings.TrimSpace(rec["excerpt"]),
+			Content:    strings.TrimSpace(rec["body"]),
+			Categories: categories,
+			Published:  published,
+			Updated:    updated,
+			Fetched:    now,
+		})
+	}
+	return out
+}
+
+func firstPostValue(rec map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(rec[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func postCategories(rec map[string]string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, 2)
+	for _, key := range []string{"categories", "category", "tags"} {
+		for _, part := range strings.FieldsFunc(rec[key], func(r rune) bool {
+			return r == '|' || r == ',' || r == ';'
+		}) {
+			category := strings.TrimSpace(part)
+			if category == "" || seen[strings.ToLower(category)] {
+				continue
+			}
+			seen[strings.ToLower(category)] = true
+			out = append(out, category)
+		}
+	}
+	return out
+}
+
+func parsePostTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+		time.RFC1123Z,
+		time.RFC1123,
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
+func postMatches(item feed.Item, q feed.Query) bool {
+	if q.Category != "" && !containsPostCategory(item.Categories, q.Category) {
+		return false
+	}
+	if !q.Since.IsZero() && feedItemTime(item).Before(q.Since) {
+		return false
+	}
+	if q.Q == "" {
+		return true
+	}
+	haystack := strings.ToLower(strings.Join([]string{
+		item.Title, item.Summary, item.Content, item.Author, strings.Join(item.Categories, " "),
+	}, "\n"))
+	return strings.Contains(haystack, strings.ToLower(q.Q))
+}
+
+func containsPostCategory(categories []string, want string) bool {
+	for _, category := range categories {
+		if strings.EqualFold(strings.TrimSpace(category), strings.TrimSpace(want)) {
+			return true
+		}
+	}
+	return false
 }
 
 type rssChannelOut struct {
@@ -66,10 +290,42 @@ type atomTextOut struct {
 	Text string `xml:",chardata"`
 }
 
+// publicFeedQuery builds the query used by the public feed endpoints. Keep all
+// filtering in one place so the human page, JSON lazy loader, RSS, and Atom
+// views cannot drift apart. The page size is bounded even when a caller sends
+// an arbitrary query parameter.
+func publicFeedQuery(r *http.Request, page, defaultSize int) feed.Query {
+	if page < 1 {
+		page = 1
+	}
+	if defaultSize < 1 {
+		defaultSize = feed.PageSizeDefault()
+	}
+	pageSize := intParam(r, "pageSize", defaultSize)
+	if pageSize < 1 {
+		pageSize = defaultSize
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	return feed.Query{
+		Page:     page,
+		PageSize: pageSize,
+		Q:        strings.TrimSpace(r.URL.Query().Get("q")),
+		Source:   strings.TrimSpace(r.URL.Query().Get("source")),
+		Category: strings.TrimSpace(r.URL.Query().Get("category")),
+		Since:    parsePostTime(strings.TrimSpace(r.URL.Query().Get("since"))),
+	}
+}
+
 // handleCombinedRSS serves the client's combined feed as RSS 2.0 (public).
 func (s *Server) handleCombinedRSS(w http.ResponseWriter, r *http.Request) {
 	client := r.PathValue("client")
-	pg := s.feeds.Combined(client, feed.Query{Page: 1, PageSize: 100})
+	if !s.clientExists(client) {
+		s.writeErr(w, http.StatusNotFound, "client not found")
+		return
+	}
+	pg := s.combinedFeed(client, publicFeedQuery(r, 1, 100))
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(xml.Header))
@@ -83,7 +339,7 @@ func (s *Server) handleCombinedRSS(w http.ResponseWriter, r *http.Request) {
 		Channel: rssChannelOut{
 			Title:       s.feedTitle(client),
 			Link:        s.baseURL + "/s/feed/" + url.PathEscape(client),
-			Description: "Single feed of every source " + client + " subscribes to.",
+			Description: "Single feed of every source " + client + " subscribes to, plus posts published in its pod table.",
 			LastBuild:   time.Now().UTC().Format(time.RFC1123Z),
 			Items:       out,
 		},
@@ -111,7 +367,11 @@ func rssItemOuts(items []feed.Item) []rssItemOut {
 // handleCombinedAtom serves the combined feed as Atom 1.0 (public).
 func (s *Server) handleCombinedAtom(w http.ResponseWriter, r *http.Request) {
 	client := r.PathValue("client")
-	pg := s.feeds.Combined(client, feed.Query{Page: 1, PageSize: 100})
+	if !s.clientExists(client) {
+		s.writeErr(w, http.StatusNotFound, "client not found")
+		return
+	}
+	pg := s.combinedFeed(client, publicFeedQuery(r, 1, 100))
 	w.Header().Set("Content-Type", "application/atom+xml; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(xml.Header))
@@ -121,7 +381,8 @@ func (s *Server) handleCombinedAtom(w http.ResponseWriter, r *http.Request) {
 			Title: it.Title, ID: "urn:stenella:" + it.ID,
 			Link:    atomLinkOut{Href: it.Link, Rel: "alternate"},
 			Updated: it.Updated.Format(time.RFC3339),
-			Summary: atomTextOut{Type: "html", Text: it.Summary},
+			Summary: atomTextOut{Type: "text", Text: it.Summary},
+			Content: atomTextOut{Type: "text", Text: it.Content},
 		})
 	}
 	_ = xml.NewEncoder(w).Encode(struct {
@@ -146,13 +407,14 @@ func (s *Server) handleCombinedAtom(w http.ResponseWriter, r *http.Request) {
 // public feed page's lazy loader (no auth — feeds are meant to be public).
 func (s *Server) handleFeedItemsPublic(w http.ResponseWriter, r *http.Request) {
 	client := r.PathValue("client")
-	page := intParam(r, "page", 1)
-	if page < 1 {
-		page = 1
+	if !s.clientExists(client) {
+		s.writeErr(w, http.StatusNotFound, "client not found")
+		return
 	}
-	pg := s.feeds.Combined(client, feed.Query{Page: page, PageSize: 30})
+	q := publicFeedQuery(r, intParam(r, "page", 1), 30)
+	pg := s.combinedFeed(client, q)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"client": client, "page": pg.Page, "page_size": 30,
+		"client": client, "page": pg.Page, "page_size": q.PageSize,
 		"total": pg.Total, "has_more": pg.HasMore, "items": pg.Items,
 	})
 }
@@ -172,14 +434,18 @@ type feedPageData struct {
 
 func (s *Server) handleClientFeedPage(w http.ResponseWriter, r *http.Request) {
 	client := r.PathValue("client")
-	q := r.URL.Query().Get("q")
-	pg := s.feeds.Combined(client, feed.Query{Page: 1, PageSize: 30, Q: q})
+	if !s.clientExists(client) {
+		s.writeErr(w, http.StatusNotFound, "client not found")
+		return
+	}
+	query := publicFeedQuery(r, 1, 30)
+	pg := s.combinedFeed(client, query)
 	if pg.Total == 0 {
 		s.renderPage(w, r, "feed", feedPageData{
 			Title: "No feed yet", Client: client, Items: []feed.Item{},
 			RSSURL:  "/s/feed/" + url.PathEscape(client) + "/combined.xml",
 			AtomURL: "/s/feed/" + url.PathEscape(client) + "/combined.atom",
-			Q:       q,
+			Q:       query.Q,
 		})
 		return
 	}
@@ -191,7 +457,7 @@ func (s *Server) handleClientFeedPage(w http.ResponseWriter, r *http.Request) {
 		AtomURL: "/s/feed/" + url.PathEscape(client) + "/combined.atom",
 		Total:   pg.Total,
 		HasMore: pg.HasMore,
-		Q:       q,
+		Q:       query.Q,
 	})
 }
 
@@ -202,11 +468,15 @@ func (s *Server) handleClientFeedPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) resolveShare(id string) (*links.Share, string, error) {
 	client, ok := s.shares.ClientFor(id)
-	if !ok {
+	if !ok || !s.clientExists(client) {
 		return nil, "", errNotFound
 	}
 	sh, err := s.shares.Get(client, id)
 	if err != nil {
+		return nil, "", errNotFound
+	}
+	if (sh.Kind == links.ShareItem || sh.Kind == links.ShareLink || sh.Kind == links.ShareTable) &&
+		(!validPublicTablePath(sh.Target) || strings.Contains(sh.Target, "/")) {
 		return nil, "", errNotFound
 	}
 	return sh, client, nil

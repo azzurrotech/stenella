@@ -28,12 +28,12 @@ does — no RBAC, no MFA, no SSO, no external identity providers.
   AES-256-GCM under a ≥ 32-byte master secret (`--secret` / `$STENELLA_SECRET`);
   vault files are never written in plaintext. Portal login compares the
   presented secret with a constant-time comparison.
-- **Feed fetching.** Sources are fetched over HTTP(S) with a 20 s timeout and
-  a 16 MiB body cap. Per-source `auth_secret` values are resolved from the
-  vault and sent only as `Authorization: Bearer` on the matching source
-  (authenticated feeds). HTML in `<description>`/`<content>` is retained on
-  the server but the web UI renders summaries as text (templates use
-  `html/template` escaping — stored values are never injected raw).
+- **Feed fetching.** Sources are fetched over HTTP(S) with bounded time and
+  response-size limits. Per-source `auth_secret` values are resolved from the
+  vault and sent only as `Authorization: Bearer` on the matching source.
+  HTML in `<description>`/`<content>` is retained on the server but the web UI
+  renders summaries as text (templates use `html/template` escaping — stored
+  values are never injected raw).
 - **Share tokens.** Token-protected shares use the same master-secret-derived
   signing; a wrong or expired token yields 403, an unknown share id yields
   404 (no oracle). Share indexes and portal listings never leak tokens.
@@ -45,9 +45,12 @@ does — no RBAC, no MFA, no SSO, no external identity providers.
   logged per client (request/response bytes, silo size samples) and billed at
   the client's `price_per_gb_hour`; the income console is admin-only.
 - **Static JS.** The four Emperor42 libraries are ordinary browser JavaScript.
-  vici uses the WebCrypto API (PBKDF2-SHA256, 256-bit AES-GCM) for
-  client-side encryption — nothing sensitive is stored in `localStorage` in
-  plaintext.
+  vici uses the WebCrypto API (PBKDF2-SHA256, 256-bit AES-GCM) when an
+  application explicitly supplies a passphrase. The azzurro checkout draft is
+  intentionally browser-local and is not a place for secrets or payment data.
+- **Public site data.** `/s/data/{client}/{table}` is read-only and limited to
+  one enabled client namespace. Traversal, management tables, and share tokens
+  fail closed; host-mapped sites cannot address another client's silo.
 
 ## Honest non-claims
 
@@ -58,6 +61,10 @@ What this project deliberately keeps simple:
 - **No rate limiting UI.** atp logs usage but per-client rate-limit *tuning*
   screens are not built.
 - **No RBAC / MFA / SSO / GDPR-anonymization.** These are not implemented.
+- **No payment/order capture.** The azzurro checkout is a local VINI workflow;
+  it does not charge a card, create an order, issue an invoice, or implement
+  WooCommerce/WordPress accounts or APIs. Those require a separate server-side
+  integration.
 - **Portal sessions are in-memory** (single process) — restart drops portal
   sessions; they are re-established by login.
 - **`httpOnly` cookies are set by the server; vici documents that JavaScript

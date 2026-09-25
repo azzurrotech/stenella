@@ -19,13 +19,27 @@
     });
   }
 
+  function safeHref(value) {
+    if (value == null || String(value).trim() === '') return '';
+    try {
+      var parsed = new URL(String(value), document.baseURI);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:') return '';
+      return parsed.href;
+    } catch (e) {
+      return '';
+    }
+  }
+
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
     if (attrs) {
       Object.keys(attrs).forEach(function (k) {
         if (k === 'class') node.className = attrs[k];
         else if (k === 'text') node.textContent = attrs[k];
-        else if (k.indexOf('on') === 0 && typeof attrs[k] === 'function') node.addEventListener(k.slice(2), attrs[k]);
+        else if (k === 'href') {
+          var href = safeHref(attrs[k]);
+          if (href) node.setAttribute('href', href);
+        } else if (k.indexOf('on') === 0 && typeof attrs[k] === 'function') node.addEventListener(k.slice(2), attrs[k]);
         else node.setAttribute(k, attrs[k]);
       });
     }

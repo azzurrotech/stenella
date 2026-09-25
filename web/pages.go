@@ -44,41 +44,13 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name string,
 	}
 }
 
-// sanitizeHTML is a conservative allow-list sanitizer for feed content
-// rendered on share pages. It strips <script>, <style>, iframes, on* handlers
-// and javascript: URLs so a malicious feed cannot run script on our origin.
+// sanitizeHTML renders untrusted feed/share content as escaped text. The
+// share page does not need executable markup, and escaping the entire value
+// is safer than trying to repair malformed or nested HTML with string
+// replacements. A template that needs rich text must sanitize it into a
+// structured representation before calling this helper.
 func sanitizeHTML(s string) string {
-	s = strings.ReplaceAll(s, "\x00", "")
-	tokens := []string{
-		"<script", "</script", "<iframe", "</iframe", "<style", "</style",
-		"<object", "</object", "<embed", "</embed", "<link", "<meta",
-	}
-	for _, t := range tokens {
-		s = strings.ReplaceAll(s, t, "")
-	}
-	var b strings.Builder
-	inTag := false
-	for _, r := range s {
-		if r == '<' {
-			inTag = true
-			b.WriteRune(r)
-			continue
-		}
-		if r == '>' {
-			inTag = false
-			b.WriteRune(r)
-			continue
-		}
-		if !inTag {
-			b.WriteRune(r)
-		}
-	}
-	// Drop event handlers and javascript: URLs inside the remaining tags.
-	out := b.String()
-	up := strings.NewReplacer(" on", " x-", " ON", " X-")
-	out = up.Replace(out)
-	out = strings.ReplaceAll(out, "javascript:", "#")
-	return out
+	return template.HTMLEscapeString(s)
 }
 
 // ---- pages --------------------------------------------------------------------
@@ -104,6 +76,9 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	clients, _ := s.atp.ListClients()
 	cards := make([]homeCard, 0, len(clients))
 	for _, c := range clients {
+		if c.Disabled {
+			continue
+		}
 		card := homeCard{
 			ID: c.ID, Name: c.Name, Notes: c.Notes,
 			SiloURL: "/c/" + c.ID + "/",

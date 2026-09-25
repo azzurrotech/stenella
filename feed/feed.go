@@ -600,7 +600,7 @@ func (e *Engine) Combined(client string, q Query) Page {
 			if seen[it.ID] {
 				continue
 			}
-			if !q.Since.IsZero() && it.Published.Before(q.Since) {
+			if !q.Since.IsZero() && itemTime(it).Before(q.Since) {
 				continue
 			}
 			if q.Category != "" && !containsStr(it.Categories, q.Category) {

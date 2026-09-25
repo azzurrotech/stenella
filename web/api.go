@@ -334,11 +334,22 @@ func (s *Server) handleDBTables(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"client": client, "tables": tables})
 }
 
+// validPortalTableName is intentionally stricter than the public bridge:
+// portal callers address a table by its name within the already authenticated
+// client namespace, so a slash would be an attempted namespace escape.
+func validPortalTableName(table string) bool {
+	return table != "" && !strings.Contains(table, "/") && validPublicTablePath(table)
+}
+
+func validPortalRecordID(id string) bool {
+	return id != "" && len(id) <= 256 && !strings.ContainsAny(id, "/\\\r\n\t") && !strings.Contains(id, "..")
+}
+
 func (s *Server) handleDBQuery(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	table := r.URL.Query().Get("table")
-	if table == "" || strings.Contains(table, "/") {
-		s.writeErr(w, http.StatusBadRequest, "table is required")
+	if !validPortalTableName(table) {
+		s.writeErr(w, http.StatusBadRequest, "a simple table name is required")
 		return
 	}
 	page := intParam(r, "page", 1)
@@ -381,8 +392,8 @@ func (s *Server) handleDBInsert(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.Table == "" || strings.Contains(req.Table, "/") {
-		s.writeErr(w, http.StatusBadRequest, "table is required")
+	if !validPortalTableName(req.Table) {
+		s.writeErr(w, http.StatusBadRequest, "a simple table name is required")
 		return
 	}
 	rec, err := s.atp.UpsertRecord(client+"/"+req.Table, req.Fields)
@@ -396,8 +407,8 @@ func (s *Server) handleDBInsert(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDBDelete(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	table, id := r.URL.Query().Get("table"), r.URL.Query().Get("id")
-	if table == "" || id == "" {
-		s.writeErr(w, http.StatusBadRequest, "table and id are required")
+	if !validPortalTableName(table) || !validPortalRecordID(id) {
+		s.writeErr(w, http.StatusBadRequest, "a simple table name and id are required")
 		return
 	}
 	if err := s.atp.DeleteRecord(client+"/"+table, id); err != nil {

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"azzurrotech/stenella/web"
 )
@@ -108,7 +109,15 @@ On hosts mapped with --host-site: "/" serves the client's hosted site and
 
 	addr := ":" + *port
 	log.Printf("stenella listening on %s (data root %q)", addr, *root)
-	if err := http.ListenAndServe(addr, svc.Handler()); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           svc.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }

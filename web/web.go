@@ -22,7 +22,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,18 +50,19 @@ type Config struct {
 	// Libs are the four Emperor42 JS libraries, keyed by filename
 	// (veni.js, vidi.js, vici.js, vini.js), served at /s/static/lib/<name>.
 	Libs map[string][]byte
-	// SiteHosts maps a public domain (host:port stripped, lower-cased) to a
-	// client id whose hosted site is served at "/" on that host. This is how
-	// azzurro.tech becomes the azzurrotech client site without a client
-	// prefix in the URL.
+	// SiteHosts maps a public domain to a client id whose hosted site is
+	// served at "/" on that host. Host keys are canonicalized on startup:
+	// case, a trailing dot, and an optional valid numeric port are ignored.
+	// This is how azzurro.tech becomes the azzurrotech client site without a client
+	// prefix in the URL. Invalid host or client values are rejected by New.
 	//
 	// The platform keeps its own namespace on mapped hosts: anything under
 	// /s/ (portal, admin, feeds, shares, JS libraries) stays reachable, and
 	// PlatformPath redirects to the stenella portal for the mapped client.
 	SiteHosts map[string]string
 	// PlatformPath is the path on mapped hosts that redirects to the
-	// stenella platform (portal for the mapped client). Defaults to
-	// "/platform" when empty.
+	// stenella platform (portal for the mapped client). It is normalized to
+	// an absolute, boundary-safe path and defaults to "/platform" when empty.
 	PlatformPath string
 }
 
@@ -92,12 +95,16 @@ func New(cfg Config) (*Server, error) {
 	if cfg.AdminPassword == "" {
 		cfg.AdminPassword = "admin"
 	}
-	if cfg.PlatformPath == "" {
-		cfg.PlatformPath = "/platform"
+	siteHosts, err := normalizeSiteHosts(cfg.SiteHosts)
+	if err != nil {
+		return nil, fmt.Errorf("SiteHosts: %w", err)
 	}
-	if cfg.SiteHosts == nil {
-		cfg.SiteHosts = map[string]string{}
+	platformPath, err := normalizePlatformPath(cfg.PlatformPath)
+	if err != nil {
+		return nil, fmt.Errorf("PlatformPath: %w", err)
 	}
+	cfg.SiteHosts = siteHosts
+	cfg.PlatformPath = platformPath
 	atpSvc, err := atpweb.NewATPService(atpweb.Options{
 		Port:          "8084",
 		Root:          cfg.Root,
@@ -143,19 +150,166 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Handler returns the full HTTP handler: atp's middleware first, then
-// stenella's own mux (wrapped in the virtual-host dispatcher) for everything
-// atp does not own.
+// Handler returns the full HTTP handler. Virtual-host dispatch is outermost
+// so a mapped public host can never reach a different client's /c/ silo. The
+// ATP middleware still owns its reserved API/management paths, and stenella's
+// mux handles the remaining platform namespace.
 func (s *Server) Handler() http.Handler {
-	return s.atpSvc.Middleware(s.hostDispatch(s.mux))
+	return s.hostDispatch(s.atpSvc.Middleware(s.siteDataPathGuard(s.mux)))
 }
 
-// hostOnly normalises an HTTP Host header to a bare, lower-cased domain.
-func hostOnly(host string) string {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+// normalizeSiteHosts returns a private, canonical copy of the host map. Host
+// names are case-insensitive, an absolute DNS name may end in a dot, and an
+// optional port does not change the site mapping. Everything else must be a
+// valid host/client pair; silently dropping a bad entry could expose one host
+// while an operator believes it is mapped to another client.
+func normalizeSiteHosts(configured map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(configured))
+	for rawHost, rawClient := range configured {
+		host := hostOnly(strings.TrimSpace(rawHost))
+		if host == "" {
+			return nil, fmt.Errorf("invalid host %q", rawHost)
+		}
+		client := strings.TrimSpace(rawClient)
+		if !validSiteClientID(client) {
+			return nil, fmt.Errorf("invalid client id %q for host %q", rawClient, rawHost)
+		}
+		if previous, exists := out[host]; exists && previous != client {
+			return nil, fmt.Errorf("host %q maps to both clients %q and %q", host, previous, client)
+		}
+		out[host] = client
 	}
-	return strings.ToLower(strings.TrimSuffix(host, "."))
+	return out, nil
+}
+
+func validSiteClientID(client string) bool {
+	if client == "" || !isASCIIAlphaNumeric(client[0]) || !isASCIIAlphaNumeric(client[len(client)-1]) {
+		return false
+	}
+	for i := 0; i < len(client); i++ {
+		c := client[i]
+		if !isASCIIAlphaNumeric(c) && c != '.' && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// normalizePlatformPath canonicalizes a configured redirect path. A leading
+// slash is added for convenience, duplicate/trailing slashes and dot segments
+// are cleaned, and paths that would steal the platform or atp namespaces are
+// rejected rather than creating a route that can never work.
+func normalizePlatformPath(configured string) (string, error) {
+	p := strings.TrimSpace(configured)
+	if p == "" {
+		p = "/platform"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if strings.HasPrefix(p, "//") {
+		return "", fmt.Errorf("path %q must not start with //", configured)
+	}
+	if strings.ContainsAny(p, "?#") {
+		return "", fmt.Errorf("path %q must not contain a query or fragment", configured)
+	}
+	u, err := url.ParseRequestURI(p)
+	if err != nil {
+		return "", fmt.Errorf("invalid path %q: %w", configured, err)
+	}
+	if u.Scheme != "" || u.Host != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		return "", fmt.Errorf("path %q must not contain a scheme, authority, query, or fragment", configured)
+	}
+	p = path.Clean(u.Path)
+	if p == "." || p == "/" || !strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("path %q must name a route below /", configured)
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] < 0x20 || p[i] == 0x7f || p[i] == '\\' {
+			return "", fmt.Errorf("path %q contains an invalid character", configured)
+		}
+	}
+
+	// /s belongs to stenella; the remaining roots are claimed by atp's outer
+	// middleware before hostDispatch gets a chance to see the request.
+	if pathAtOrBelow(p, "/s") {
+		return "", fmt.Errorf("path %q is reserved", p)
+	}
+	for _, reserved := range []string{"/api", "/c", "/gw"} {
+		if pathAtOrBelow(p, reserved) {
+			return "", fmt.Errorf("path %q is reserved", p)
+		}
+	}
+	// atp owns these roots, but only at a complete path-segment boundary:
+	// /login-page and /healthcheck remain valid static-site paths.
+	for _, reserved := range []string{"/clients", "/login", "/logout", "/health"} {
+		if pathAtOrBelow(p, reserved) {
+			return "", fmt.Errorf("path %q is reserved", p)
+		}
+	}
+	return p, nil
+}
+
+func pathAtOrBelow(requestPath, base string) bool {
+	return requestPath == base || strings.HasPrefix(requestPath, base+"/")
+}
+
+// hostOnly canonicalizes an HTTP Host authority for lookup. It returns an
+// empty string for malformed authorities so a bad Host header can never fall
+// through to a configured site mapping.
+func hostOnly(host string) string {
+	if host == "" || host != strings.TrimSpace(host) {
+		return ""
+	}
+	u, err := url.Parse("//" + host)
+	if err != nil || u.Scheme != "" || u.User != nil || u.Host == "" || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		return ""
+	}
+	// The URL parser accepts an empty port (for example, "example.com:").
+	// It has no useful Host-header meaning, so require a digit when supplied.
+	if strings.HasSuffix(u.Host, ":") {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return ""
+		}
+	}
+	name := strings.ToLower(u.Hostname())
+	if strings.Contains(name, ":") { // IPv6 authorities must use brackets.
+		ip := net.ParseIP(name)
+		if ip == nil {
+			return ""
+		}
+		return ip.String()
+	}
+	name = strings.TrimSuffix(name, ".")
+	if !validHostName(name) {
+		return ""
+	}
+	return name
+}
+
+func validHostName(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || !isASCIIAlphaNumeric(label[0]) || !isASCIIAlphaNumeric(label[len(label)-1]) {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !isASCIIAlphaNumeric(c) && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // cloneReq returns a copy of r whose URL path is rewritten to newPath (the
@@ -167,21 +321,52 @@ func cloneReq(r *http.Request, newPath string) *http.Request {
 	u.Path = newPath
 	u.RawPath = ""
 	r2.URL = &u
-	r2.RequestURI = newPath
-	if u.RawQuery != "" {
-		r2.RequestURI += "?" + u.RawQuery
-	}
+	r2.RequestURI = u.RequestURI()
 	return r2
+}
+
+// atpOwnedPath reports whether ATP owns a path on a mapped host. It matches
+// complete path segments, so /healthcheck and /login-page remain available to
+// a static site while /health and /login retain their ATP meanings.
+func atpOwnedPath(p string) bool {
+	for _, base := range []string{"/api", "/clients", "/gw", "/c"} {
+		if pathAtOrBelow(p, base) {
+			return true
+		}
+	}
+	return p == "/login" || p == "/logout" || p == "/health"
+}
+
+func safeMappedSitePath(p string) bool {
+	if p == "" || p[0] != '/' || strings.ContainsAny(p, "\\\r\n\t") {
+		return false
+	}
+	if p == "/" {
+		return true
+	}
+	trimmed := strings.TrimPrefix(p, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	if trimmed == "" {
+		return false
+	}
+	for _, segment := range strings.Split(trimmed, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // hostDispatch implements virtual hosting: for hosts listed in
 // Config.SiteHosts the mapped client's hosted site (their song silo, served
-// via atp's public /c/{client}/... handler so usage metering and scoping
+// via ATP's public /c/{client}/... handler so usage metering and scoping
 // still apply) is served at "/", PlatformPath redirects to the stenella
 // platform, and everything under /s/ remains the platform's own namespace.
 //
-// atp's Middleware runs before this handler and already owns /api, /clients,
-// /c, /gw, /login and /health, so this only ever sees stenella's paths.
+// Dispatch is deliberately outside ATP middleware. Otherwise a request such
+// as /c/other-client/... on a trusted mapped host would be handled by ATP
+// before the host mapping and could serve another tenant's JavaScript under
+// the mapped origin.
 func (s *Server) hostDispatch(next http.Handler) http.Handler {
 	plat := s.cfg.PlatformPath
 	if plat == "" {
@@ -195,28 +380,72 @@ func (s *Server) hostDispatch(next http.Handler) http.Handler {
 		}
 		p := r.URL.Path
 
+		// The platform keeps its own namespace on mapped hosts. Check this
+		// before the configurable platform path so /s always remains owned by
+		// stenella, even if a Server was assembled without New's validation.
+		if pathAtOrBelow(p, "/s") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// The documented "platform" endpoint: azzurro.tech/platform should
-		// land on the stenella platform automatically.
-		if p == plat || strings.HasPrefix(p, plat+"/") {
+		// land on the stenella platform automatically. Match complete path
+		// segments so /platformish remains part of the hosted site.
+		if pathAtOrBelow(p, plat) {
 			target := "/s/portal?client=" + url.QueryEscape(client)
 			http.Redirect(w, r, target, http.StatusPermanentRedirect)
 			return
 		}
 
-		// The platform keeps its own namespace on mapped hosts.
-		if p == "/s" || strings.HasPrefix(p, "/s/") {
+		// ATP's reserved paths remain available on a mapped host, but /c is
+		// special: only the mapped client's own silo may be addressed there.
+		if atpOwnedPath(p) {
+			if p == "/c" || strings.HasPrefix(p, "/c/") {
+				segments := strings.Split(strings.TrimPrefix(p, "/c/"), "/")
+				if len(segments) == 0 || segments[0] == "" || segments[0] != client {
+					http.NotFound(w, r)
+					return
+				}
+				// Song may emit an internal /{client}/... redirect even when
+				// the request arrived through the explicit /c/ compatibility
+				// route. Rewrite that response to the mapped public namespace.
+				wrapped := &mappedResponseWriter{
+					ResponseWriter: w,
+					client:         client,
+					originalHost:   r.Host,
+					originalQuery:  r.URL.RawQuery,
+				}
+				next.ServeHTTP(wrapped, r)
+				return
+			}
+			// Preserve ATP's normal auth/usage handling for the other reserved
+			// ATP paths (the mapped client's /c route was handled above).
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Everything else on a mapped host is the client's hosted site.
-		var newPath string
-		if p == "/" {
-			newPath = "/c/" + client + "/"
-		} else {
-			newPath = "/c/" + client + p
+		// Everything else on a mapped host is the client's hosted site. Route
+		// through the middleware (rather than Handler directly) so usage
+		// metering and Song's public silo checks remain active. Reject raw
+		// traversal/separator variants before ATP's mux gets a chance to
+		// canonicalize a path that could otherwise escape the mapped client.
+		if !safeMappedSitePath(p) {
+			http.NotFound(w, r)
+			return
 		}
-		s.atp.Handler().ServeHTTP(w, cloneReq(r, newPath))
+		newPath := "/c/" + client
+		if p == "/" {
+			newPath += "/"
+		} else {
+			newPath += p
+		}
+		wrapped := &mappedResponseWriter{
+			ResponseWriter: w,
+			client:         client,
+			originalHost:   r.Host,
+			originalQuery:  r.URL.RawQuery,
+		}
+		next.ServeHTTP(wrapped, cloneReq(r, newPath))
 	})
 }
 

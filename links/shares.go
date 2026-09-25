@@ -1,6 +1,7 @@
 package links
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,10 +73,10 @@ func (s *Shares) persistIndex() {
 
 // Create makes a share. days <= 0 means no expiry.
 func (s *Shares) Create(client, kind, target, title string, days int) (*Share, error) {
-	if client == "" {
-		return nil, errors.New("client is required")
+	if !validIdentifier(client) || !validIdentifier(target) {
+		return nil, errors.New("client and target are required")
 	}
-	kind = strings.ToLower(kind)
+	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case ShareItem, ShareLink, ShareTable:
 	default:
@@ -161,6 +162,9 @@ func (s *Shares) ClientFor(id string) (string, bool) {
 
 // Get reads a share record.
 func (s *Shares) Get(client, id string) (*Share, error) {
+	if !validIdentifier(client) || !validIdentifier(id) {
+		return nil, errors.New("invalid share reference")
+	}
 	rec, err := s.atp.GetRecord(SharesTable(client), id)
 	if err != nil {
 		return nil, err
@@ -173,6 +177,9 @@ func (s *Shares) Get(client, id string) (*Share, error) {
 
 // List returns a client's shares, newest first.
 func (s *Shares) List(client string, limit, offset int) ([]Share, error) {
+	if !validIdentifier(client) {
+		return nil, errors.New("invalid client")
+	}
 	tq := atpclient.TableQuery{OrderBy: "created", Desc: true}
 	if limit > 0 {
 		tq.Limit = limit
@@ -196,7 +203,8 @@ func (s *Shares) List(client string, limit, offset int) ([]Share, error) {
 
 // Valid reports whether a presented token matches and the share hasn't lapsed.
 func (sh *Share) Valid(presented string) bool {
-	if sh.Token == "" || presented == "" || sh.Token != presented {
+	if sh.Token == "" || presented == "" || len(sh.Token) != len(presented) ||
+		subtle.ConstantTimeCompare([]byte(sh.Token), []byte(presented)) != 1 {
 		return false
 	}
 	if sh.Expires != "" {
@@ -209,6 +217,9 @@ func (sh *Share) Valid(presented string) bool {
 
 // Delete removes the record, junction and index entry.
 func (s *Shares) Delete(client, id string) error {
+	if !validIdentifier(client) || !validIdentifier(id) {
+		return errors.New("invalid share reference")
+	}
 	if err := s.atp.DeleteRecord(SharesTable(client), id); err != nil {
 		return err
 	}
