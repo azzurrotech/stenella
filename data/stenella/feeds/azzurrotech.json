@@ -1,0 +1,15 @@
+[
+  {
+    "id": "00a6b6a2012fa253",
+    "name": "CSE Securtiy Notices",
+    "url": "https://www.cyber.gc.ca/api/cccs/atom/v1/get?feed=alerts_advisories\u0026lang=en",
+    "kind": "rss",
+    "enabled": true,
+    "interval_min": 15,
+    "last_fetch": "2026-09-25T20:53:14.541340867Z",
+    "last_status": "ok",
+    "last_count": 0,
+    "item_count": 0,
+    "added": "2026-09-25T19:58:34.422969981Z"
+  }
+]

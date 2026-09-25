@@ -1,0 +1,20 @@
+{
+  "settings": {
+    "default_price_per_gb_hour": 0.05,
+    "default_retention_hours": 24,
+    "max_upload_bytes": 67108864,
+    "request_log_limit_per_client": 2000
+  },
+  "clients": [
+    {
+      "id": "azzurrotech",
+      "name": "Azzurro Technology Inc.",
+      "created": "2026-09-25T18:46:44Z",
+      "chargeable": true,
+      "price_per_gb_hour": 0.05,
+      "retention_hours": 24,
+      "notes": "Our website"
+    }
+  ],
+  "updated": "2026-09-25T18:46:44Z"
+}

@@ -1,90 +1,463 @@
-{{define "portal"}}<!DOCTYPE html>
+{{define "portal"}}
+<!DOCTYPE html>
 <html lang="en">
-<head>{{template "head" .}}</head>
-<body data-page="portal" data-client="{{.Client}}">
-{{template "nav" .}}
-<main class="wrap">
-  <section class="identity panel">
-    <div>
-      <h1>Client Portal</h1>
-      <p class="muted" id="id-label">Sign in to manage feeds, links, storage and billing.</p>
-    </div>
-    <div class="id-actions">
-      <span id="id-badge" class="badge hidden"></span>
-      <button id="login-btn" class="btn">Sign in</button>
-    </div>
-  </section>
+<head>
+    {{template "head" .}}
+    <style>
+        .portal-layout {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            min-height: 100vh;
+        }
+        .sidebar {
+            background: var(--bg-secondary, #f8f9fa);
+            border-right: 1px solid var(--border-color, #dee2e6);
+            padding: 20px 0;
+        }
+        .main-content {
+            padding: 20px;
+            overflow-x: auto;
+        }
+        .nav-section {
+            margin-bottom: 25px;
+        }
+        .nav-section-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: var(--text-muted, #6c757d);
+            font-weight: 600;
+            margin-bottom: 10px;
+            padding: 0 20px;
+        }
+        .nav-item {
+            display: block;
+            padding: 12px 20px;
+            color: var(--text-primary, #495057);
+            text-decoration: none;
+            border-left: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        .nav-item:hover {
+            background: var(--bg-hover, #e9ecef);
+        }
+        .nav-item.active {
+            background: var(--bg-active, #e3f2fd);
+            border-left-color: var(--primary, #2196f3);
+            color: var(--primary, #2196f3);
+            font-weight: 500;
+        }
+        .nav-icon {
+            display: inline-block;
+            width: 20px;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        .panel {
+            background: var(--bg-primary, white);
+            border: 1px solid var(--border-color, #dee2e6);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .panel-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color, #dee2e6);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border-color, #dee2e6);
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--primary, #2196f3);
+            box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+        }
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn.primary {
+            background: var(--primary, #2196f3);
+            color: white;
+            border-color: var(--primary, #2196f3);
+        }
+        .btn.primary:hover {
+            background: var(--primary-dark, #1976d2);
+            border-color: var(--primary-dark, #1976d2);
+        }
+        .btn.secondary {
+            background: white;
+            color: var(--text-primary, #495057);
+            border-color: var(--border-color, #dee2e6);
+        }
+        .btn.secondary:hover {
+            background: var(--bg-hover, #e9ecef);
+        }
+        .btn.danger {
+            background: var(--danger, #dc3545);
+            color: white;
+            border-color: var(--danger, #dc3545);
+        }
+        .btn.danger:hover {
+            background: var(--danger-dark, #c82333);
+            border-color: var(--danger-dark, #c82333);
+        }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        .table th,
+        .table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color, #dee2e6);
+            vertical-align: middle;
+        }
+        .table th {
+            background: var(--bg-secondary, #f8f9fa);
+            font-weight: 600;
+            color: var(--text-primary, #495057);
+        }
+        .table tbody tr:hover {
+            background: var(--bg-hover, #e9ecef);
+        }
+        .table .actions {
+            white-space: nowrap;
+            display: flex;
+            gap: 5px;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-right: 5px;
+        }
+        .status-badge.active {
+            background: var(--success-light, #c3e6cb);
+            color: var(--success-dark, #155724);
+            border: 1px solid var(--success, #28a745);
+        }
+        .status-badge.inactive {
+            background: var(--danger-light, #f8d7da);
+            color: var(--danger-dark, #721c24);
+            border: 1px solid var(--danger, #dc3545);
+        }
+        .status-badge.creating {
+            background: var(--warning-light, #ffeaa7);
+            color: var(--warning-dark, #856404);
+            border: 1px solid var(--warning, #ffc107);
+        }
+        .upload-zone {
+            border: 2px dashed var(--border-color, #dee2e6);
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            background: var(--bg-light, #f8f9fa);
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        .upload-zone:hover,
+        .upload-zone.dragover {
+            border-color: var(--primary, #2196f3);
+            background: var(--primary-light, #e3f2fd);
+        }
+        .upload-zone input[type="file"] {
+            display: none;
+        }
+        .upload-progress {
+            margin-top: 15px;
+            padding: 10px;
+            background: var(--bg-light, #f8f9fa);
+            border-radius: 4px;
+            font-size: 13px;\n        }
+        .data-list {
+            max-height: 400px;
+            overflow: auto;
+            margin-bottom: 15px;
+        }
+        .data-list .item {
+            padding: 10px;
+            border-bottom: 1px solid var(--border-color, #dee2e6);
+        }
+        .data-list .item:hover {
+            background: var(--bg-hover, #e9ecef);
+        }
+        .data-list .item:last-child {
+            border-bottom: none;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .input-group input {
+            flex: 1;
+        }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid var(--border-color, #dee2e6);
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 12px 20px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-muted, #6c757d);
+        }
+        .tab.active {
+            background: var(--bg-primary, white);
+            border-color: var(--border-color, #dee2e6);
+            border-bottom: 1px solid white;
+            color: var(--primary, #2196f3);
+        }
+        .tab:hover {
+            background: var(--bg-light, #f8f9fa);
+        }
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+        .modal.open {
+            opacity: 1;
+            visibility: visible;
+        }
+        .modal-content {
+            background: white;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            overflow: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color, #dee2e6);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted, #6c757d);
+        }
+        .modal-close:hover {
+            color: var(--text-primary, #495057);
+        }
+        .modal-body {
+            padding: 20px;
+        }
+        .alert {
+            padding: 12px 16px;
+            border-left: 4px solid;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .alert.success {
+            background: var(--success-light, #c3e6cb);
+            border-color: var(--success, #28a745);
+            color: var(--success-dark, #155724);
+        }
+        .alert.error {
+            background: var(--danger-light, #f8d7da);
+            border-color: var(--danger, #dc3545);
+            color: var(--danger-dark, #721c24);
+        }
+        .quick-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .stat-card {
+            background: var(--bg-primary, white);
+            border: 1px solid var(--border-color, #dee2e6);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--primary, #2196f3);
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: var(--text-muted, #6c757d);
+        }
+        .code-block {
+            background: var(--bg-lightest, #f8f9fa);
+            border: 1px solid var(--border-color, #dee2e6);
+            border-radius: 4px;
+            padding: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            overflow-x: auto;
+            white-space: pre;
+            margin: 10px 0;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted, #6c757d);
+        }
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+        .filter-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .filter-bar input,
+        .filter-bar select {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color, #dee2e6);
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .filter-bar input {
+            min-width: 200px;
+        }
+        .filter-bar select {
+            min-width: 120px;
+        }
+        .highlight-row {
+            background: var(--warning-light, #fff3cd);
+        }
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-primary: #1a1a1a;
+                --bg-secondary: #2d2d2d;
+                --bg-hover: #383838;
+                --bg-active: #444;
+                --bg-light: #2d2d2d;
+                --bg-lightest: #333;
+                --text-primary: #ffffff;
+                --text-muted: #999;
+                --text-secondary: #ccc;
+                --border-color: #444;
+                --primary: #2196f3;
+                --primary-dark: #1976d2;
+                --danger: #dc3545;
+                --danger-dark: #c82333;
+                --success: #28a745;
+                --success-dark: #155724;
+                --warning: #ffc107;
+                --warning-dark: #856404;
+            }
+        }
+    </style>
+    <title>AzzurroTech Portal - Stenella Platform</title>
+</head>
+<body>
+    <div class="portal-layout">
+        <aside class="sidebar">
+            <div class="nav-section">
+                <div class="nav-section-title">DATABASE</div>
+                <a href="#" class="nav-item active" data-section="tables">
+                    <span class="nav-icon">📊</span>Tables
+                </a>
+                <a href="#" class="nav-item" data-section="items">
+                    <span class="nav-icon">📄</span>Items
+                </a>
+                <a href="#" class="nav-item" data-section="bulk-import">
+                    <span class="nav-icon">📤</span>Bulk Import
+                </a>
+            </div>
+            <div class="nav-section">
+                <div class="nav-section-title">SITE MANAGEMENT</div>
+                <a href="" data-section="sites" class="nav-item">
+                    <span class="nav-icon">🌐</span>Sites
+                </a>
+                <a href="" data-section="files" class="nav-item">
+                    <span class="nav-icon">☐</span>Files
+                </a>
+            </div>
+            <div class="nav-section">
+                <div class="nav-section-title">SYSTEM</div>
+                <a href="" class="nav-item">
+                    <span class="nav-icon">⚙️</span>Settings
+                </a>
+                <a href="/s/portal?client=azzurrotech&tab=billing" class="nav-item">
+                    <span class="nav-icon">💰</span>Billing
+                </a>
+                <a href="/s" class="nav-item">
+                    <span class="nav-icon">🏠</span>Home
+                </a>
+            </div>
+        </aside>
 
-  <form id="login-form" class="panel hidden">
-    <h2>Portal sign in</h2>
-    <label>Client<input type="text" name="client" id="login-client" value="{{.Client}}" placeholder="client id"></label>
-    <label>Portal secret<input type="password" name="secret" id="login-secret" autocomplete="current-password" placeholder="your portal secret"></label>
-    <div class="row">
-      <button class="btn primary" type="submit">Sign in</button>
-      <button type="button" id="login-cancel" class="btn ghost">Cancel</button>
+        <main class="main-content">
+            <div id="main-content">
+                {{template "portal-tables" .}}
+            </div>
+        </main>
     </div>
-  </form>
 
-  <nav id="tabs" class="tabs hidden">
-    <button data-tab="feeds" class="active">Feeds</button>
-    <button data-tab="items">Items</button>
-    <button data-tab="links">Links</button>
-    <button data-tab="shares">Shares</button>
-    <button data-tab="db">Database</button>
-    <button data-tab="sites">Site</button>
-    <button data-tab="secrets">Secrets</button>
-    <button data-tab="billing">Billing</button>
-    <button data-tab="security">Security</button>
-  </nav>
-
-  <section id="panes" class="panes">
-    <div id="pane-feeds" class="pane active">
-      <div class="toolbar"><button id="add-feed-btn" class="btn primary">Add feed</button></div>
-      <div id="feeds-list" class="list"></div>
-    </div>
-    <div id="pane-items" class="pane">
-      <div class="toolbar">
-        <input type="search" id="items-q" placeholder="Search items…">
-        <button id="refresh-feed-btn" class="btn">Refresh all</button>
-      </div>
-      <div id="items-list" class="feed"></div>
-      <div id="items-more" class="center hidden"><button id="items-next" class="btn">Load more</button></div>
-    </div>
-    <div id="pane-links" class="pane">
-      <div class="toolbar"><button id="add-link-btn" class="btn primary">New link</button></div>
-      <div id="links-list" class="list"></div>
-    </div>
-    <div id="pane-shares" class="pane">
-      <div class="toolbar"><button id="add-share-btn" class="btn primary">New share</button></div>
-      <div id="shares-list" class="list"></div>
-    </div>
-    <div id="pane-db" class="pane">
-      <div class="toolbar">
-        <select id="db-tables"></select>
-        <input type="search" id="db-q" placeholder="Search records…">
-        <button id="db-add-btn" class="btn primary">Add record</button>
-      </div>
-      <div id="db-records" class="table-wrap"></div>
-    </div>
-    <div id="pane-sites" class="pane">
-      <div class="toolbar"><button id="add-file-btn" class="btn primary">New file</button></div>
-      <div id="sites-list" class="list"></div>
-    </div>
-    <div id="pane-secrets" class="pane">
-      <div class="toolbar"><button id="add-secret-btn" class="btn primary">Add secret</button></div>
-      <div id="secrets-list" class="list"></div>
-    </div>
-    <div id="pane-billing" class="pane">
-      <div id="billing-view" class="panel"></div>
-      <div class="toolbar"><button id="edit-payment-btn" class="btn">Edit payment info</button></div>
-      <div id="payment-view" class="panel"></div>
-    </div>
-    <div id="pane-security" class="pane">
-      <div class="toolbar"><button id="issue-key-btn" class="btn primary">Issue key</button></div>
-      <div id="keys-list" class="list"></div>
-    </div>
-  </section>
-</main>
-{{template "scripts" .}}
+    {{template "scripts" .}}
 </body>
-</html>{{end}}
+</html>
+{{end}}

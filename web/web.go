@@ -496,6 +496,8 @@ func (s *Server) routes() {
 	m.Handle("GET /s/api/portal/db/table", s.clientGate(s.handleDBQuery))
 	m.Handle("POST /s/api/portal/db/table", s.clientGate(s.handleDBInsert))
 	m.Handle("DELETE /s/api/portal/db/record", s.clientGate(s.handleDBDelete))
+	m.Handle("POST /s/api/portal/db/table/create", s.clientGate(s.handleDBCreateTable))
+	m.Handle("POST /s/api/portal/db/table/bulk", s.clientGate(s.handleDBBulkInsert))
 
 	m.Handle("GET /s/api/portal/sites/meta", s.clientGate(s.handleSitesMeta))
 	m.Handle("GET /s/api/portal/sites/files", s.clientGate(s.handleSitesFiles))

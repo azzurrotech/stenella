@@ -404,6 +404,8 @@ func (s *Server) handleDBInsert(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, map[string]any{"record": rec})
 }
 
+// ---- sites (song through atp) --------------------------------------------------
+
 func (s *Server) handleDBDelete(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	table, id := r.URL.Query().Get("table"), r.URL.Query().Get("id")
@@ -416,6 +418,52 @@ func (s *Server) handleDBDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
+// ---- sites (song through atp) --------------------------------------------------
+
+func (s *Server) handleSitesMeta(w http.ResponseWriter, r *http.Request) {
+	client := clientParam(r)
+	files, err := s.atp.ListSiloFiles(client, "")
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"client": client, "files": files, "public_url": "/c/" + client + "/"})
+}
+
+func (s *Server) handleDBBulkInsert(w http.ResponseWriter, r *http.Request) {
+	client := clientParam(r)
+	table := r.URL.Query().Get("table")
+	if !validPortalTableName(table) {
+		s.writeErr(w, http.StatusBadRequest, "a simple table name is required")
+		return
+	}
+	var req struct {
+		Records []map[string]string `json:"records"`
+	}
+	if err := s.readBody(r, &req); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.Records) == 0 {
+		s.writeJSON(w, http.StatusOK, map[string]any{"inserted": 0})
+		return
+	}
+	inserted := 0
+	var lastError error
+	for _, rec := range req.Records {
+		if _, err := s.atp.UpsertRecord(client+"/"+table, rec); err != nil {
+			lastError = err
+			continue
+		}
+		inserted++
+	}
+	if lastError != nil && inserted == 0 {
+		s.writeErr(w, http.StatusInternalServerError, lastError.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"inserted": inserted})
 }
 
 // ---- sites (song through atp) --------------------------------------------------

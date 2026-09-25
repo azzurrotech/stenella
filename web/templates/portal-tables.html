@@ -1,0 +1,68 @@
+{{define "portal-tables"}}
+<h1 class="page-title">📊 Database Tables Management</h1>
+
+<section class="actions-bar">
+  <div class="action-left">
+    <button id="create-table-btn" class="btn primary">
+      <span class="nav-icon">+</span> Create New Table
+    </button>
+  </div>
+  <div class="action-right">
+    <input type="text" id="table-search" placeholder="Search tables...">
+  </div>
+</section>
+
+<section class="quick-stats cards small">
+  <div class="stat-card">
+    <div class="stat-value" id="total-tables">0</div>
+    <div class="stat-label">Total Tables</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="total-records">0</div>
+    <div class="stat-label">Total Records</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="last-updated">--</div>
+    <div class="stat-label">Last Updated</div>
+  </div>
+</section>
+
+<section class="table-list">
+  </h2 class="section-title">Available Tables</h2>
+  <div id="tables-container" class="list">
+    <div class="loading-state">Loading tables...</div>
+  </div>
+</section>
+
+<section id="create-table-modal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 class="modal-title">Create New Table</h2>
+      <button class="modal-close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="alert error hidden"></span></div>
+      <form id="create-table-form">
+        <div class="form-group">
+          <label for="table-name">Table Name (alphanumeric only, no spaces)</label>
+          <input type="text" id="table-name" name="table" required placeholder="e.g., products, users, orders">
+        </div>
+        <div class="form-group">
+          <label for="table-columns">Columns (comma-separated)</label>
+          <input type="text" id="table-columns" name="columns" required placeholder="id, name, email,date_created">
+          <small class="help-text">Use no spaces, separate columns with commas</small>
+        </div>
+        <div class="form-group">
+          <label for="table-description">Description (optional)</label>
+          <textarea id="table-description" name="description" rows="3" placeholder="Describe what this table stores..."></textarea>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn secondary" id="cancel-create-table">Cancel</button>
+      <button type="submit" form="create-table-form" class="btn primary">Create Table</button>
+    </div>
+  </div>
+</section>
+
+{{end}}

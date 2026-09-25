@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "hours": {
+    "2026-09-25T18": {
+      "hour": "2026-09-25T18",
+      "req_bytes": 124,
+      "resp_bytes": 260,
+      "requests": 2
+    },
+    "2026-09-25T19": {
+      "hour": "2026-09-25T19",
+      "req_bytes": 0,
+      "resp_bytes": 7862,
+      "requests": 31,
+      "sampled": true,
+      "sample_count": 1
+    },
+    "2026-09-25T20": {
+      "hour": "2026-09-25T20",
+      "req_bytes": 0,
+      "resp_bytes": 11376,
+      "requests": 33,
+      "sampled": true,
+      "sample_count": 2
+    }
+  }
+}

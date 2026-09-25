@@ -1,0 +1,14 @@
+{
+  "clients": {
+    "azzurrotech": {
+      "secret": "a-secret-for-the-azzurrotech-client",
+      "enabled": true,
+      "created": "2026-01-01T00:00:00Z"
+    },
+    "azzurro": {
+      "secret": "a-secret-for-the-azzurro-client",
+      "enabled": true,
+      "created": "2026-01-01T00:00:00Z"
+    }
+  }
+}

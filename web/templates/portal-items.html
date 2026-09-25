@@ -1,0 +1,166 @@
+{{define "portal-items"}}
+<h1 class="page-title">📄 Items Management - <span class="table-name">Select Table</span></h1>
+
+<section class="actions-bar">
+  <div class="action-left">
+    <button id="add-item-btn" class="btn primary" disabled>
+      <span class="nav-icon">+</span> Add Item
+    </button>
+    <button id="bulk-import-btn" class="btn secondary" disabled>
+      <span class="nav-icon">📤</span> Bulk Import CSV/JSON
+    </button>
+  </div>
+  <div class="action-right">
+    <input type="text" id="item-search" placeholder="Search items..." disabled>
+  </div>
+</section>
+
+<section class="quick-stats cards small" id="items-stats" style="display: none;">
+  <div class="stat-card">
+    <div class="stat-value" id="total-items">0</div>
+    <div class="stat-label">Total Items</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="last-id">--</div>
+    <div class="stat-label">Last Item ID</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" id="updated-at">--</div>
+    <div class="stat-label">Last Updated</div>
+  </div>
+</section>
+
+<section class="table-selection">
+  <h2 class="section-title">Select a Table</h2>
+  <div class="table-selector">
+    <div class="loading-state">Loading tables...</div>
+  </div>
+</section>
+
+<section id="items-management" style="display: none;">
+  <h2 class="section-title"><span class="table-name">Table Name</span> - Items</h2>
+
+  <section class="actions-bar">
+    <div class="action-left">
+      <button id="refresh-items-btn" class="btn primary">🔄 Refresh</button>
+    </div>
+    <div class="action-right">
+      <select id="page-size-select">
+        <option value="20" selected>20 per page</option>
+        <option value="50" selected>50 per page</option>
+        <option value="100" selected>100 per page</option>
+      </select>
+    </div>
+  </section>
+
+  <section class="filter-bar">
+    <input type="text" id="item-query" placeholder="Search by content...">
+    <input type="text" id="item-orderby" placeholder="Order by column...">
+    <select id="item-order-dir">
+      <option value="asc" selected>Ascending</option>
+      <option value="desc" selected>Descending</option>
+    </select>
+    <button id="apply-filters-btn" class="btn primary">Apply Filters</button>
+  </section>
+
+  <div class="items-container">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="items-table-body">
+        <tr class="loading-row">
+          <td colspan="2" class="text-center">Loading items...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="pagination">
+    <div class="pagination-info">
+      <span class="total-count">0</span> <span class="showing-count">(0-0)</span> shown
+    </div>
+    <div class="pagination-controls">
+      <button class="btn secondary" id="prev-page" disabled>Previous</button>
+      <span class="page-info">Page <span class="current-page">1</span> of <span class="total-pages">1</span></span>
+      <button class="btn secondary" id="next-page" disabled>Next</button>
+    </div>
+  </section>
+
+  <section id="item-form-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="item-form-title">Add/Edit Item</h2>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="alert error hidden"><span></span></div>
+        <form id="item-form">
+          <input type="hidden" id="item-id" name="id">
+          <h3>Item Data</h3>
+          <div id="dynamic-fields">
+            <div class="loading-state">Select a table first...</div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn secondary" id="cancel-item-form">Cancel</button>
+        <button type="submit" form="item-form" class="btn primary">Save Item</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="bulk-import-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Bulk Import Items</h2>
+        <button class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <h3>Import Format</h3>
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="import-format" value="json" checked>
+            <span class="radio-custom"></span>
+            JSON Array
+            <span class="radio-desc">Standard JSON array of objects</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="import-format" value="csv">
+            <span class="radio-custom"></span>
+            CSV
+            <span class="radio-desc">Comma-separated values</span>
+          </label>
+        </div>
+
+        <h3>Upload File</h3>
+        <div class="upload-zone" id="bulk-upload-zone">
+          <div class="upload-icon">📁</div>
+          <div class="upload-text">
+            <strong>Click to upload or drag and drop</strong>
+            <p>JSON must be an array of objects, CSV with headers</p>
+          </div>
+          <input type="file" id="bulk-file-input" accept=".json,.csv">
+        </div>
+
+        <h3>Preview</h3>
+        <div id="import-preview">
+          <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p>Upload a file to preview the data...</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn secondary" id="cancel-bulk-import">Cancel</button>
+        <button type="button" class="btn primary" id="confirm-bulk-import">Import Items</button>
+      </div>
+    </div>
+  </section>
+
+</section>
+
+{{end}}
