@@ -93,7 +93,11 @@ func New(cfg Config) (*Server, error) {
 		cfg.AdminUser = "admin"
 	}
 	if cfg.AdminPassword == "" {
-		cfg.AdminPassword = "admin"
+		if envPass := os.Getenv("STENELLA_ADMIN_PASSWORD"); envPass != "" {
+			cfg.AdminPassword = envPass
+		} else {
+			cfg.AdminPassword = "admin"
+		}
 	}
 	siteHosts, err := normalizeSiteHosts(cfg.SiteHosts)
 	if err != nil {
