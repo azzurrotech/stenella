@@ -36,18 +36,30 @@ func newTestStack(t *testing.T) (*atpclient.Client, string) {
 
 // seedItem registers client (if not yet present) and inserts one item record,
 // returning its id. It is safe to call more than once per client.
+// seedItem writes an item row in the shape the platform actually persists:
+// envelope metadata plus a title envelope, never a plaintext title. The display
+// title is supplied by a stub resolver, exactly as the feed engine supplies it in
+// production.
 func seedItem(t *testing.T, cli *atpclient.Client, client string) string {
 	t.Helper()
 	ensureClient(t, cli, client)
 	rec, err := cli.UpsertRecord(ItemsTable(client), map[string]string{
-		"title": "A feed story",
-		"link":  "https://story.test/1",
-		"guid":  "g1",
+		"title_enc": "salt.iv.ciphertext",
+		"link":      "https://story.test/1",
+		"guid":      "g1",
 	})
 	if err != nil {
 		t.Fatalf("UpsertRecord: %v", err)
 	}
 	return rec["id"]
+}
+
+// stubTitles is a TitleResolver that returns a fixed title for any id, standing
+// in for the feed engine's in-memory plaintext copy.
+type stubTitles struct{ title string }
+
+func (s stubTitles) ItemTitle(string, string) (string, string, bool) {
+	return s.title, "https://story.test/1", true
 }
 
 // ensureClient creates the client, tolerating an existing registration.
@@ -123,6 +135,7 @@ func TestCreateItemLinkAndJunction(t *testing.T) {
 	toID := seedItem(t, cli, "acme")
 
 	s := New(root, cli)
+	s.SetTitleResolver(stubTitles{title: "A feed story"})
 	ln, err := s.Create("acme", fromID, ToItem, toID, "", "mentions", "see also")
 	if err != nil {
 		t.Fatalf("Create: %v", err)

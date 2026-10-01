@@ -160,3 +160,133 @@ label input, label select, label textarea {
   .topbar { flex-direction: column; gap: .4rem; }
   .identity { flex-direction: column; align-items: flex-start; gap: .6rem; }
 }
+/* ---- feed timeline + ACL cards (plan §4.3/§5.1) ------------------------- */
+.feed-layout {
+  display: grid; grid-template-columns: 200px 1fr; gap: 1.4rem;
+  align-items: start;
+}
+.feed-sidebar {
+  position: sticky; top: 1rem;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem;
+}
+.feed-sidebar-title {
+  margin: 0 0 .5rem; font-size: .78rem; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted);
+}
+.feed-sidebar-title + .source-list { margin-bottom: 1.2rem; }
+
+.source-item {
+  display: flex; align-items: center; gap: .4rem;
+  padding: .3rem 0; font-size: .9rem;
+}
+.source-name { flex: 1; overflow-wrap: anywhere; }
+.source-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.source-url { color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+
+.filter-bar { display: flex; flex-direction: column; gap: .3rem; }
+.filter-btn {
+  background: none; border: 1px solid transparent; border-radius: 8px;
+  padding: .4rem .6rem; text-align: left; cursor: pointer;
+  font-size: .9rem; color: var(--ink);
+}
+.filter-btn:hover { background: #eef2f8; }
+.filter-btn.active { border-color: var(--brand); color: var(--brand); font-weight: 600; }
+
+.timeline-cards { list-style: none; margin: 0; padding: 0; }
+.timeline-cards .feed-item { list-style: none; }
+
+/* The class badge is the reader's only signal about what an item is, so it
+   carries colour *and* a text label rather than colour alone. */
+.acl-badge {
+  display: inline-block; padding: .05rem .4rem; border-radius: 999px;
+  font-size: .68rem; font-weight: 700; letter-spacing: .04em;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.acl-public { color: var(--good); }
+.acl-private { color: var(--muted); }
+.acl-protected { color: #9a6700; }
+
+.card-header {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem;
+  margin-bottom: .4rem;
+}
+.card-header h3 { margin: 0; font-size: 1.05rem; }
+.card-meta {
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  color: var(--muted); font-size: .85rem;
+}
+.card-body p { margin: 0; }
+.card-footer {
+  display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
+  margin-top: .7rem; padding-top: .6rem; border-top: 1px solid var(--line);
+}
+
+@media (max-width: 760px) {
+  .feed-layout { grid-template-columns: 1fr; }
+  .feed-sidebar { position: static; }
+}
+
+/* ---- collaboration: comments, pins, client-side search --------------------
+   These rules only apply where the browser is holding a content key, which is
+   the portal items pane. The public feed page is server-rendered and gated by
+   ACL class, so it deliberately shares none of this. */
+
+.item-actions { display: flex; gap: .4rem; align-items: center; margin-top: .5rem; }
+.pin-btn { font-size: .85rem; }
+.pin-btn.pinned { color: #9a6700; }
+.note { font-size: .85rem; margin: .3rem 0 .6rem; }
+
+/* An item the retention sweep removed. The strike is not decoration: it tells a
+   reader that the entry is a tombstone reconciled from the server, not a
+   rendering glitch, and the note says why. */
+.feed-item.expired { opacity: .72; border-style: dashed; }
+.feed-item.expired h2 { text-decoration: line-through; }
+.expired-note { color: var(--muted); font-size: .8rem; margin: .3rem 0 0; }
+
+/* Comment threads. <details> is the whole interaction: collapsed by default so
+   a long feed is not a wall of forms, and keyboard- and screen-reader-native
+   without any script. */
+.thread { margin-top: .5rem; border-top: 1px solid var(--line); padding-top: .4rem; }
+.thread > summary { cursor: pointer; color: var(--muted); font-size: .88rem; }
+.thread-body { margin: .4rem 0; }
+.comment { border-left: 2px solid var(--line); padding: .1rem 0 .1rem .7rem; margin: .5rem 0; }
+.comment header { display: flex; gap: .6rem; align-items: baseline; font-size: .8rem; color: var(--muted); }
+.comment-author { font-weight: 600; color: var(--ink); }
+.comment-body { margin: .2rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-form { display: grid; gap: .4rem; }
+.comment-form textarea {
+  width: 100%; font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 8px;
+  resize: vertical;
+}
+.comment-note { font-size: .78rem; }
+
+/* ---- usage dashboard ------------------------------------------------------- */
+
+.stat-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: .8rem 1rem;
+}
+.stat-value { margin: 0; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+.stat-label { margin: .15rem 0 0; color: var(--muted); font-size: .82rem; }
+
+/* A ranked bar list: grid rather than nested flex so the label, the meter and
+   the value stay on one baseline row without per-row width maths. */
+.ranked { margin: 1.2rem 0; }
+.ranked h3 { margin: 0 0 .5rem; font-size: 1rem; }
+.ranked-row {
+  display: grid; grid-template-columns: minmax(8rem, 14rem) 1fr auto;
+  gap: .7rem; align-items: center; padding: .2rem 0;
+}
+.ranked-label { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ranked-value { font-size: .85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ranked-meter { width: 100%; height: .7rem; }
+
+/* The series is inline SVG drawn by hand, so the only styling it needs is the
+   stroke/fill pair. preserveAspectRatio="none" on the element means these must
+   scale, which is why the stroke is non-scaling via vector-effect. */
+.series { margin: 1.2rem 0; }
+.series-chart { width: 100%; height: 140px; display: block; }
+.series-line { stroke: var(--brand); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.series-area { fill: var(--brand); opacity: .12; stroke: none; }
+.series figcaption { font-size: .82rem; }

@@ -195,7 +195,3 @@ func (c *Calculator) Income() (*Report, error) {
 	}
 	return rep, nil
 }
-
-func (c *Calculator) incomeClient(client string) (map[string]any, error) {
-	return c.atp.Billing(client)
-}

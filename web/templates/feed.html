@@ -13,19 +13,37 @@
     </form>
   </header>
 
-  <ol id="feed-items" class="feed" start="1">
-    {{range .Items}}
-    <li class="feed-item" data-id="{{.ID}}">
-      <h2><a href="{{.Link}}" rel="noopener" target="_blank">{{.Title}}</a></h2>
-      <p class="muted">{{.SourceName}} · {{.Published.Format "2006-01-02 15:04"}} · {{if .Author}}{{.Author}}{{end}}</p>
-      <p class="summary">{{.Summary}}</p>
-    </li>
-    {{else}}
-    <li class="muted">No items match. Subscribe a source from the client portal.</li>
-    {{end}}
-  </ol>
+  <div class="feed-layout">
+  <nav class="feed-sidebar">
+    <h2 class="feed-sidebar-title">Sources</h2>
+    <div id="source-list" class="source-list"></div>
+    <h2 class="feed-sidebar-title">Access</h2>
+    <div class="filter-bar">
+      <button type="button" class="filter-btn filter-all active" data-filter="all">All</button>
+      <button type="button" class="filter-btn filter-public" data-filter="public">Public</button>
+      <button type="button" class="filter-btn filter-private" data-filter="private">Private</button>
+      <button type="button" class="filter-btn filter-protected" data-filter="protected">Protected</button>
+    </div>
+  </nav>
 
-  {{if .HasMore}}<div id="feed-more-wrap" class="center"><button id="feed-more" class="btn" type="button">Load more</button></div>{{end}}
+  <div class="feed-main">
+    <p id="timeline-status" class="muted" role="status" aria-live="polite">{{.Total}} item{{if ne .Total 1}}s{{end}}.</p>
+    {{/* The server renders the first page so the feed works without JS; the
+         timeline script then re-renders this same list as <article> cards. */}}
+    <ol id="timeline-items" class="feed timeline-cards" reversed aria-live="polite">
+      {{range .Items}}
+      <li class="feed-item" data-id="{{.ID}}">
+        <h2><a href="{{.Link}}" rel="noopener" target="_blank">{{.Title}}</a></h2>
+        <p class="muted">{{.SourceName}} · {{.Published.Format "2006-01-02 15:04"}} · {{if .Author}}{{.Author}}{{end}}</p>
+        <p class="summary">{{.Summary}}</p>
+      </li>
+      {{else}}
+      <li class="muted">No items match. Subscribe a source from the client portal.</li>
+      {{end}}
+    </ol>
+    {{if .HasMore}}<div id="feed-more-wrap" class="center"><button id="feed-more" class="btn" type="button">Load more</button></div>{{end}}
+  </div>
+</div>
 </main>
 {{template "scripts" .}}
 </body>

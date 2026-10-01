@@ -5,6 +5,10 @@
  * /s/api/* endpoints; stenella itself proxies into atp. The four Emperor42
  * libraries (veni/vidi/vici/vini) are loaded before this file and used where
  * they add value — feature-detected so a missing library never breaks a page.
+ *
+ * STENELLA Timeline and Card Views Implementation
+ * Frontend implementation for public feed page with timeline + card views
+ * and SHEPHERD ACL integration using Source.AclClass field
  */
 (function () {
   'use strict';
@@ -228,9 +232,12 @@
   // ===========================================================================
   // Public feed page: lazy pagination
   // ===========================================================================
+  // initFeed drives "Load more" on the public feed page. The list itself is
+  // rendered by the server and then re-rendered as cards by initTimeline, so
+  // this only has to append a further page to whatever list is on the page.
   function initFeed() {
     var client = document.body.dataset.client;
-    var more = $('#feed-more'), list = $('#feed-items');
+    var more = $('#feed-more'), list = $('#timeline-items');
     if (!client || !more || !list) return;
     var next = 2;
     more.addEventListener('click', function () {
@@ -246,6 +253,306 @@
         if (!data.has_more) more.parentNode.removeChild(more);
       }).catch(function (e) { alert(e.message); });
     });
+  }
+
+  // ===========================================================================
+  // STENELLA Timeline and Card Views: Semantic HTML with SHEPHERD ACL integration
+  // ===========================================================================
+  function initTimeline() {
+    var client = document.body.dataset.client;
+    var timelineStatus = $('#timeline-status');
+    var timelineItems = $('#timeline-items');
+    var sourceList = $('#source-list');
+    var filterBtns = $$('.filter-btn');
+
+    if (!client || !timelineItems) return;
+
+    var currentFilter = 'all';
+    var feedItems = [];
+
+    function statusLabel(status) {
+      return {
+        'defined': 'Not started',
+        'running': 'Running',
+        'paused': 'Paused',
+        'done': 'Complete',
+        'ended': 'Ended'
+      }[status] || status;
+    }
+
+    function loadFeedItems() {
+      fetch('/s/feed/' + encodeURIComponent(client) + '/items')
+        .then(function(response) {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return response.json();
+        })
+        .then(function(data) {
+          onFeedItemsLoaded(data.items || []);
+        })
+        .catch(function(error) {
+          if (timelineStatus) timelineStatus.textContent = 'Error loading items: ' + error.message;
+          console.error('Failed to load feed items:', error);
+        });
+    }
+
+    function onFeedItemsLoaded(items) {
+      feedItems = items;
+      renderTimeline();
+      if (timelineStatus) timelineStatus.textContent = 'Loaded ' + items.length + ' items';
+
+      // Calculate filter counts
+      updateFilterCountsUI(items);
+    }
+
+    function updateFilterCountsUI(items) {
+      var allBtn = document.querySelector('.filter-all');
+      var publicBtn = document.querySelector('.filter-public');
+      var privateBtn = document.querySelector('.filter-private');
+      var protectedBtn = document.querySelector('.filter-protected');
+
+      if (allBtn) {
+        var allText = 'All';
+        var allCount = items.length;
+        if (allCount > 0) allText = 'All (' + allCount + ')';
+        allBtn.textContent = allText;
+      }
+      if (publicBtn) {
+        var publicCount = items.filter(function(item) {
+          return item.source && item.source.acl_class === 'public';
+        }).length;
+        var publicText = 'Public';
+        if (publicCount > 0) publicText = 'Public (' + publicCount + ')';
+        publicBtn.textContent = publicText;
+      }
+      if (privateBtn) {
+        var privateCount = items.filter(function(item) {
+          return item.source && item.source.acl_class === 'private';
+        }).length;
+        var privateText = 'Private';
+        if (privateCount > 0) privateText = 'Private (' + privateCount + ')';
+        privateBtn.textContent = privateText;
+      }
+      if (protectedBtn) {
+        var protectedCount = items.filter(function(item) {
+          return item.source && item.source.acl_class === 'protected';
+        }).length;
+        var protectedText = 'Protected';
+        if (protectedCount > 0) protectedText = 'Protected (' + protectedCount + ')';
+        protectedBtn.textContent = protectedText;
+      }
+    }
+
+    function renderTimeline() {
+      if (!timelineItems) return;
+
+      var filteredItems = feedItems;
+      if (currentFilter !== 'all') {
+        filteredItems = feedItems.filter(function(item) {
+          return item.source && item.source.acl_class === currentFilter;
+        });
+      }
+
+      timelineItems.innerHTML = '';
+
+      if (filteredItems.length === 0) {
+        timelineItems.innerHTML = '<p class="empty">No items found for selected filter.</p>';
+        return;
+      }
+
+      // Sort by published date (newest first)
+      filteredItems.sort(function(a, b) {
+        var dateA = a.published ? new Date(a.published) : new Date(0);
+        var dateB = b.published ? new Date(b.published) : new Date(0);
+        return dateB - dateA;
+      });
+
+      filteredItems.forEach(function(item) {
+        timelineItems.appendChild(createTimelineCard(item));
+      });
+
+      // Update source list
+      updateSourceList(filteredItems);
+    }
+
+    // The list is an <ol>, so each entry is an <li> wrapping the <article>.
+    // Plan §5.1 asks for a card timeline; keeping the list item as the direct
+    // child is what makes it valid markup rather than a styled-up invalid one.
+    function createTimelineCard(item) {
+      var row = document.createElement('li');
+      row.className = 'feed-item';
+      if (item.id) row.setAttribute('data-id', item.id);
+
+      var card = document.createElement('article');
+      card.className = 'card';
+
+      if (item.source && item.source.acl_class) {
+        card.classList.add('acl-' + item.source.acl_class);
+      }
+
+      var header = document.createElement('header');
+      header.className = 'card-header';
+
+      var title = document.createElement('h3');
+      title.textContent = item.title || 'Untitled';
+
+      var meta = document.createElement('div');
+      meta.className = 'card-meta';
+
+      if (item.source) {
+        var sourceInfo = document.createElement('span');
+        sourceInfo.className = 'source-info';
+        sourceInfo.textContent = item.source.name || 'Unknown Source';
+
+        if (item.source.acl_class) {
+          var aclBadge = document.createElement('span');
+          aclBadge.className = 'acl-badge acl-' + item.source.acl_class;
+          aclBadge.textContent = item.source.acl_class.toUpperCase();
+          sourceInfo.appendChild(aclBadge);
+        }
+
+        meta.appendChild(sourceInfo);
+      }
+
+      if (item.published) {
+        var time = document.createElement('time');
+        time.dateTime = item.published;
+        time.textContent = formatDate(item.published);
+        meta.appendChild(time);
+      }
+
+      header.appendChild(title);
+      header.appendChild(meta);
+      card.appendChild(header);
+
+      if (item.summary || item.content) {
+        var body = document.createElement('div');
+        body.className = 'card-body';
+
+        var content = document.createElement('p');
+        content.textContent = item.summary || item.content || '';
+        body.appendChild(content);
+        card.appendChild(body);
+      }
+
+      var footer = document.createElement('footer');
+      footer.className = 'card-footer';
+
+      if (item.link) {
+        var linkBtn = document.createElement('a');
+        linkBtn.href = item.link;
+        linkBtn.target = '_blank';
+        linkBtn.rel = 'noopener';
+        // The shared stylesheet's button class is .btn.primary, not
+        // .btn-primary; the latter matched nothing and rendered as bare text.
+        linkBtn.className = 'btn primary';
+        linkBtn.textContent = 'Read more »';
+        footer.appendChild(linkBtn);
+      }
+
+      if (item.source && item.source.url) {
+        var sourceUrl = document.createElement('a');
+        sourceUrl.href = item.source.url;
+        sourceUrl.target = '_blank';
+        sourceUrl.rel = 'noopener';
+        sourceUrl.className = 'source-url';
+        sourceUrl.textContent = '(' + item.source.url + ')';
+        footer.appendChild(sourceUrl);
+      }
+
+      card.appendChild(footer);
+      row.appendChild(card);
+      return row;
+    }
+
+    function updateSourceList(items) {
+      if (!sourceList) return;
+
+      var sources = [];
+      var index = {};
+      items.forEach(function(item) {
+        if (!item.source || !item.source.name) return;
+        var key = item.source.name + '\u0000' + (item.source.acl_class || 'public');
+        var seen = index[key];
+        if (seen) {
+          // Tally in place. The original counted every source at 1, so the
+          // sidebar reported "1" for a feed with fifty items.
+          seen.count += 1;
+          return;
+        }
+        var entry = {
+          name: item.source.name,
+          url: item.source.url || '',
+          acl_class: item.source.acl_class || 'public',
+          count: 1
+        };
+        index[key] = entry;
+        sources.push(entry);
+      });
+
+      if (sources.length === 0) {
+        sourceList.innerHTML = '<p>No sources</p>';
+        return;
+      }
+
+      sourceList.innerHTML = '';
+      sources.forEach(function(source) {
+        var sourceItem = document.createElement('div');
+        sourceItem.className = 'source-item';
+
+        var name = document.createElement('span');
+        name.className = 'source-name';
+        name.textContent = source.name;
+
+        var aclBadge = document.createElement('span');
+        aclBadge.className = 'acl-badge acl-' + source.acl_class;
+        aclBadge.textContent = source.acl_class.toUpperCase();
+
+        var count = document.createElement('span');
+        count.className = 'source-count';
+        count.textContent = source.count;
+
+        sourceItem.appendChild(name);
+        sourceItem.appendChild(aclBadge);
+        sourceItem.appendChild(count);
+
+        sourceList.appendChild(sourceItem);
+      });
+    }
+
+    function formatDate(isoString) {
+      var date = new Date(isoString);
+      var now = new Date();
+      var diffTime = Math.abs(now - date);
+      var diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) return 'Today';
+      if (diffDays === 1) return 'Yesterday';
+      if (diffDays < 7) return diffDays + ' days ago';
+
+      return date.toLocaleDateString();
+    }
+
+    filterBtns.forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        currentFilter = this.dataset.filter;
+        updateFilterUI();
+        renderTimeline();
+      });
+    });
+
+    function updateFilterUI() {
+      filterBtns.forEach(function(btn) {
+        var btnFilter = btn.dataset.filter;
+        if (btnFilter) {
+          btn.classList.toggle('active', btnFilter === currentFilter);
+        }
+      });
+    }
+
+    currentFilter = 'all';
+    updateFilterUI();
+    if (timelineStatus) loadFeedItems();
   }
 
   // ===========================================================================
@@ -276,6 +583,7 @@
   function initPortal() {
     var client = document.body.dataset.client || '';
     var loginBtn = $('#login-btn'), loginForm = $('#login-form'), badge = $('#id-badge');
+    var logoutBtn = $('#logout-btn');
     var tabs = $('#tabs'), label = $('#id-label');
 
     if (!client) {
@@ -292,12 +600,15 @@
         badge.textContent = who.role === 'admin' ? 'super admin' : (who.client.id);
         badge.classList.remove('hidden');
         loginBtn.classList.add('hidden');
+        // Sign out appears only once there is a session to end.
+        if (logoutBtn) logoutBtn.classList.remove('hidden');
         label.textContent = (who.client.name || who.client.id) + ' — ' + (who.silo_url || '/c/' + client + '/');
         tabs.classList.remove('hidden');
         return true;
       }).catch(function () {
         badge.classList.add('hidden');
         loginBtn.classList.remove('hidden');
+        if (logoutBtn) logoutBtn.classList.add('hidden');
         tabs.classList.add('hidden');
         return false;
       });
@@ -377,27 +688,45 @@
     });
 
     // items ------------------------------------------------------------------
+    // The portal items endpoint returns envelopes, not plaintext: the server
+    // holds the content key but does not spend it on the wire. So this renderer
+    // only lays out the envelope metadata and leaves the headline and summary
+    // empty; collaboration.js decrypts them in and fills the gaps, and owns the
+    // search box as well. The two halves are separate on purpose — app.js stays
+    // usable on pages where there is no key at all.
     var itemsPage = 1, itemsTotal = 0;
     function loadItems(reset) {
       if (reset) itemsPage = 1;
       var box = $('#items-list'), moreWrap = $('#items-more');
-      get('/s/api/portal/items?client=' + qs + '&page=' + itemsPage + '&pageSize=20' + ($('#items-q').value ? '&q=' + encodeURIComponent($('#items-q').value) : '')).then(function (data) {
+      get('/s/api/portal/items?client=' + qs + '&page=' + itemsPage + '&pageSize=20').then(function (data) {
         if (reset) box.innerHTML = '';
         (data.items || []).forEach(function (it) {
-          box.appendChild(el('li', { class: 'feed-item' }, [
-            el('h2', {}, [el('a', { href: it.link, target: '_blank', rel: 'noopener' }, [it.title])]),
-            muted(esc(it.source_name || '') + ' · ' + esc(it.published || '') + (it.author ? ' · ' + esc(it.author) : '')),
-            el('p', { class: 'summary' }, [esc(it.summary || '')]),
+          // <article>, not <li>: #items-list is a div, and a list item outside a
+          // list is invalid markup that assistive technology drops.
+          var node = el('article', { class: 'feed-item', 'data-id': it.id }, [
+            el('h2', {}, [el('a', {
+              href: it.link || '#', target: '_blank', rel: 'noopener',
+              text: it.link ? it.link.replace(/^https?:\/\//, '').slice(0, 48) : '(no link)'
+            })]),
+            muted(esc(it.source_name || '') + ' · ' + esc(it.published || '') +
+              (it.author ? ' · ' + esc(it.author) : '') + ' · ' +
+              (it.acl_class || 'public') +
+              (it.content_bytes ? ' · ' + it.content_bytes + ' B' : '')),
+            el('p', { class: 'summary' }, []),
             row([btn('Link…', function () { openLinkDialog(it); }, 'small')])
-          ]));
+          ]);
+          box.appendChild(node);
         });
         itemsTotal = data.total || 0;
         moreWrap.classList.toggle('hidden', !data.has_more);
         itemsPage += 1;
+        // Hand the envelopes to the collaboration bundle. The alternative — it
+        // re-fetching the page to learn the same ciphertext — would be a second
+        // request per page for data this call already had.
+        if (window.stenellaApp) window.stenellaApp.setItems(data.items || []);
+        if (window.stenellaCollab) window.stenellaCollab.decorate();
       }).catch(function (e) { box.appendChild(errEl(e.message)); });
     }
-    var qInput = $('#items-q');
-    qInput.addEventListener('keyup', function (e) { if (e.key === 'Enter') { $('#items-list').innerHTML = ''; loadItems(true); } });
     $('#items-next').addEventListener('click', function () { loadItems(false); });
     $('#refresh-feed-btn').addEventListener('click', function () {
       post('/s/api/portal/refresh?client=' + qs).then(function () {
@@ -445,6 +774,28 @@
 
     $('#add-link-btn').addEventListener('click', function () { openLinkDialog(null); });
 
+    // Signing out has to reach two places: the server session, and the browser's
+    // copy of the content key. The event is how the second one happens — the key
+    // bundle owns the storage, so it does the clearing.
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', function () {
+        post('/s/api/client/logout?client=' + qs).then(function () {
+          document.dispatchEvent(new CustomEvent('stenella:signed-out', { detail: { client: qs } }));
+          location.reload();
+        }).catch(function (e) { alert(e.message); });
+      });
+    }
+
+    // The pieces the collaboration bundle needs but should not reimplement: the
+    // current page of envelopes, the link dialog (the graph is the links
+    // store's, so there is one dialog), and the modal helper it has no reason to
+    // reinvent.
+    window.stenellaApp = {
+      items: [],
+      setItems: function (list) { this.items = list; },
+      openLinkDialog: openLinkDialog
+    };
+
     // shares -----------------------------------------------------------------
     function loadShares() {
       var box = $('#shares-list');
@@ -490,6 +841,61 @@
 
     // database ---------------------------------------------------------------
     var dbTables = $('#db-tables');
+    var dbNewTableBtn = $('#db-new-table-btn');
+    var dbBulkBtn = $('#db-bulk-btn');
+
+    // Creating a table is the one schema-changing call the portal makes, so it
+    // validates the name client-side too and reports the server's verdict
+    // verbatim rather than swallowing it.
+    function createTable() {
+      modal('New table', [
+        { name: 'table', label: 'Table name (letters, digits and dashes)', placeholder: 'products' },
+        { name: 'columns', label: 'Columns (comma separated)', value: 'id, name', placeholder: 'id, name, price' }
+      ], function (data, handle) {
+        var cols = (data.columns || '').split(',').map(function (c) { return c.trim(); }).filter(Boolean);
+        if (!data.table || !data.table.trim()) return alert('A table name is required.');
+        if (!cols.length) return alert('At least one column is required.');
+        return post('/s/api/portal/db/table/create?client=' + qs, { table: data.table.trim(), columns: cols })
+          .then(function () {
+            handle.close();
+            return loadTables().then(function () {
+              dbTables.value = data.table.trim();
+              return loadRecords();
+            });
+          }).then(null, function (e) { alert(e.message); });
+      });
+    }
+
+    // Bulk import accepts a JSON array of objects. Column names come from the
+    // first row, which matches how the table was created.
+    function bulkImport() {
+      var table = dbTables.value;
+      if (!table) { alert('Pick a table first.'); return; }
+      var handle = modal('Bulk import into ' + table, [
+        { name: 'rows', label: 'JSON array of objects', kind: 'textarea', value: '[\n  {"id": "1", "name": "first"}\n]' }
+      ], function (data) {
+        var parsed;
+        try {
+          parsed = JSON.parse(data.rows);
+        } catch (err) {
+          return alert('That is not valid JSON: ' + err.message);
+        }
+        if (!Array.isArray(parsed) || !parsed.length) return alert('Provide a non-empty JSON array of objects.');
+        var bad = parsed.findIndex(function (r) { return !r || typeof r !== 'object' || Array.isArray(r); });
+        if (bad >= 0) return alert('Row ' + (bad + 1) + ' is not an object.');
+        return post('/s/api/portal/db/table/bulk?client=' + qs + '&table=' + encodeURIComponent(table),
+          { records: parsed })
+          .then(function (out) {
+            handle.close();
+            alert('Imported ' + out.inserted + ' record(s) into ' + table + '.');
+            return loadTables().then(loadRecords);
+          }).then(null, function (e) { alert(e.message); });
+      });
+    }
+
+    if (dbNewTableBtn) dbNewTableBtn.addEventListener('click', createTable);
+    if (dbBulkBtn) dbBulkBtn.addEventListener('click', bulkImport);
+
     function loadTables() {
       get('/s/api/portal/db/tables?client=' + qs).then(function (data) {
         dbTables.innerHTML = '';
@@ -934,7 +1340,7 @@
   // ===========================================================================
   switch (page) {
     case 'home': initHome(); break;
-    case 'feed': initFeed(); break;
+    case 'feed': initFeed(); initTimeline(); break;
     case 'share': initShare(); break;
     case 'portal': initPortal(); break;
     case 'admin': initAdmin(); break;

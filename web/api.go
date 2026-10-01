@@ -51,23 +51,29 @@ func (s *Server) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 		IntervalMin   int    `json:"interval_min"`
 		AuthSecret    string `json:"auth_secret"`
 		RetentionDays int    `json:"retention_days"`
+		AclClass      string `json:"acl_class"`
 	}
 	if err := s.readBody(r, &req); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	src, err := s.feeds.AddSource(client, req.Name, req.URL, req.Kind, req.IntervalMin, req.AuthSecret, req.RetentionDays)
+	acl := strings.ToLower(strings.TrimSpace(req.AclClass))
+	if acl != "" && !feed.ValidACLClass(acl) {
+		s.writeErr(w, http.StatusBadRequest, "acl_class must be public, private or protected")
+		return
+	}
+	src, err := s.feeds.AddSourceClassified(client, req.Name, req.URL, req.Kind, req.IntervalMin, req.AuthSecret, req.RetentionDays, acl)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// First fetch is eager so the feed is useful immediately.
-	go func() {
+	s.trackBackground(func() {
 		ff, ferr := s.feeds.Fetch(client, src, s.secretResolver())
 		if ferr == nil {
 			s.mirrorToPod(client, ff)
 		}
-	}()
+	})
 	s.writeJSON(w, http.StatusCreated, map[string]any{"source": src})
 }
 
@@ -75,10 +81,12 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	id := r.PathValue("id")
 	var req struct {
-		Name        string `json:"name"`
-		Enabled     *bool  `json:"enabled"`
-		IntervalMin int    `json:"interval_min"`
-		AuthSecret  string `json:"auth_secret"`
+		Name          string `json:"name"`
+		Enabled       *bool  `json:"enabled"`
+		IntervalMin   int    `json:"interval_min"`
+		AuthSecret    string `json:"auth_secret"`
+		AclClass      string `json:"acl_class"`
+		RetentionDays int    `json:"retention_days"`
 	}
 	if err := s.readBody(r, &req); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid body")
@@ -94,6 +102,18 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	if req.IntervalMin > 0 {
 		patch["interval_min"] = req.IntervalMin
 	}
+	// Only touch the ACL when the caller actually sent a class, so an update
+	// that omits it cannot silently reset a source back to public.
+	if acl := strings.ToLower(strings.TrimSpace(req.AclClass)); acl != "" {
+		if !feed.ValidACLClass(acl) {
+			s.writeErr(w, http.StatusBadRequest, "acl_class must be public, private or protected")
+			return
+		}
+		patch["acl_class"] = acl
+	}
+	if req.RetentionDays >= 0 {
+		patch["retention_days"] = req.RetentionDays
+	}
 	patch["auth_secret"] = req.AuthSecret
 	if err := s.feeds.UpdateSource(client, id, patch); err != nil {
 		s.writeErr(w, http.StatusNotFound, err.Error())
@@ -101,11 +121,11 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	src := s.feeds.GetSource(client, id)
 	if src != nil && src.Enabled {
-		go func() {
+		s.trackBackground(func() {
 			if ff, err := s.feeds.Fetch(client, src, s.secretResolver()); err == nil {
 				s.mirrorToPod(client, ff)
 			}
-		}()
+		})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"source": src})
 }
@@ -147,7 +167,7 @@ func (s *Server) handleRefreshAll(w http.ResponseWriter, r *http.Request) {
 	}
 	// Mirror freshly fetched caches into pod (one pass, newest first already).
 	if pg := s.feeds.Combined(client, feed.Query{Page: 1, PageSize: 1000}); len(pg.Items) > 0 {
-		go func() {
+		s.trackBackground(func() {
 			for _, it := range pg.Items {
 				cats := strings.Join(it.Categories, "|")
 				_, _ = s.atp.UpsertRecord(links.ItemsTable(client), map[string]string{
@@ -159,7 +179,7 @@ func (s *Server) handleRefreshAll(w http.ResponseWriter, r *http.Request) {
 					"fetched":   it.Fetched.Format(time.RFC3339),
 				})
 			}
-		}()
+		})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"client": client, "results": results,
@@ -206,18 +226,35 @@ func (s *Server) handleFeedItems(w http.ResponseWriter, r *http.Request) {
 	if pageSize > 200 {
 		pageSize = 200
 	}
+	// The portal is the authenticated view, so it may ask for any ACL class and
+	// gets them all by default. Unlike the public endpoint, an unset class here
+	// means "no restriction" rather than "public only".
+	acl := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("acl")))
+	if !feed.ValidACLClass(acl) {
+		acl = ""
+	}
 	q := feed.Query{
 		Page:     page,
 		PageSize: pageSize,
 		Q:        r.URL.Query().Get("q"),
 		Source:   r.URL.Query().Get("source"),
 		Category: r.URL.Query().Get("category"),
+		AclClass: acl,
 	}
 	pg := s.feeds.Combined(client, q)
+	// Envelopes, not Items: the portal holds the content key, so it is the one
+	// caller that can open the bodies, and the browser does that itself. That is
+	// what makes the client-side full-text search in collaboration.js possible —
+	// and it keeps the private-class bodies off the wire in the clear.
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"client": client, "page": pg.Page, "page_size": pageSize,
-		"total": pg.Total, "has_more": pg.HasMore, "items": pg.Items,
+		"total": pg.Total, "has_more": pg.HasMore, "items": feed.Envelopes(pg.Items),
 		"categories": s.feeds.Categories(client),
+		// metadata_searchable tells the UI whether the server can answer this
+		// query at all, so it can say "bodies are searched in your browser"
+		// instead of implying the hit list is complete.
+		"metadata_searchable": feed.MetadataSearchable(q.Q),
+		"encrypted":           true,
 	})
 }
 
@@ -345,6 +382,13 @@ func validPortalRecordID(id string) bool {
 	return id != "" && len(id) <= 256 && !strings.ContainsAny(id, "/\\\r\n\t") && !strings.Contains(id, "..")
 }
 
+// validPortalColumnName keeps a caller-supplied column name to the same simple
+// shape as a table name. Column names reach pod verbatim, so anything that
+// could be read back as a path segment or an XML attribute boundary is refused.
+func validPortalColumnName(col string) bool {
+	return col != "" && len(col) <= 128 && !strings.ContainsAny(col, "/\\\r\n\t \"'<>=") && !strings.Contains(col, "..")
+}
+
 func (s *Server) handleDBQuery(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	table := r.URL.Query().Get("table")
@@ -404,7 +448,7 @@ func (s *Server) handleDBInsert(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, map[string]any{"record": rec})
 }
 
-// ---- sites (song through atp) --------------------------------------------------
+// ---- database (pod through atp) ----------------------------------------------
 
 func (s *Server) handleDBDelete(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
@@ -420,18 +464,44 @@ func (s *Server) handleDBDelete(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
-// ---- sites (song through atp) --------------------------------------------------
-
-func (s *Server) handleSitesMeta(w http.ResponseWriter, r *http.Request) {
+// handleDBCreateTable creates a pod table inside the caller's namespace. Both
+// the table name and every column name are validated here because this is the
+// one database endpoint that lets a client introduce new schema rather than
+// only address existing schema.
+func (s *Server) handleDBCreateTable(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
-	files, err := s.atp.ListSiloFiles(client, "")
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err.Error())
+	var req struct {
+		Table   string   `json:"table"`
+		Columns []string `json:"columns"`
+	}
+	if err := s.readBody(r, &req); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"client": client, "files": files, "public_url": "/c/" + client + "/"})
+	if !validPortalTableName(req.Table) {
+		s.writeErr(w, http.StatusBadRequest, "a simple table name is required")
+		return
+	}
+	cols := make([]string, 0, len(req.Columns))
+	for _, c := range req.Columns {
+		if !validPortalColumnName(c) {
+			s.writeErr(w, http.StatusBadRequest, "invalid column name: "+c)
+			return
+		}
+		cols = append(cols, c)
+	}
+	if err := s.atp.CreateTable(client+"/"+req.Table, cols); err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"client": client, "table": req.Table, "columns": cols,
+	})
 }
 
+// handleDBBulkInsert upserts a batch of records in one round trip. A partial
+// failure still reports the successes; only a total failure is an error, so a
+// single bad row in a large import does not discard the rest.
 func (s *Server) handleDBBulkInsert(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	table := r.URL.Query().Get("table")
@@ -468,6 +538,9 @@ func (s *Server) handleDBBulkInsert(w http.ResponseWriter, r *http.Request) {
 
 // ---- sites (song through atp) --------------------------------------------------
 
+// handleSitesMeta reports the silo summary for the client: how many hosted
+// files exist and where they are publicly reachable. The count is what the
+// portal renders ("N file(s) hosted at ..."), so `files` stays a number here.
 func (s *Server) handleSitesMeta(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	files, err := s.atp.ListSiloFiles(client, "")

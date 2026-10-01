@@ -161,6 +161,10 @@ func (s *Server) postFeedItems(client string) []feed.Item {
 			published = now
 		}
 		categories := postCategories(rec)
+		// Site posts carry an author-controlled acl_class so the same
+		// public/private/protected gating applies to them as to feed sources.
+		// Anything unrecognised normalises to public.
+		acl := feed.NormalizeACLClass(firstPostValue(rec, "acl_class", "acl", "visibility"))
 		out = append(out, feed.Item{
 			ID:         "post:" + id,
 			SourceID:   postsFeedSource,
@@ -174,6 +178,12 @@ func (s *Server) postFeedItems(client string) []feed.Item {
 			Published:  published,
 			Updated:    updated,
 			Fetched:    now,
+			Source: &feed.ItemSource{
+				ID:       postsFeedSource,
+				Name:     "Posts",
+				Kind:     "site",
+				AclClass: acl,
+			},
 		})
 	}
 	return out
@@ -227,7 +237,17 @@ func parsePostTime(value string) time.Time {
 	return time.Time{}
 }
 
+// postMatches filters a client-authored post against a query.
+//
+// Like itemMatches in the feed engine, it searches envelope metadata only. A
+// post body is sealed before it reaches the pod table, so a server-side query
+// cannot see it; the browser decrypts and filters the text itself. The one
+// deliberate exception is the post's own id and link, which are the metadata a
+// client pastes when linking to something.
 func postMatches(item feed.Item, q feed.Query) bool {
+	if q.AclClass != "" && !feed.AllowedACL(item, feed.NormalizeACLClass(q.AclClass)) {
+		return false
+	}
 	if q.Category != "" && !containsPostCategory(item.Categories, q.Category) {
 		return false
 	}
@@ -238,7 +258,8 @@ func postMatches(item feed.Item, q feed.Query) bool {
 		return true
 	}
 	haystack := strings.ToLower(strings.Join([]string{
-		item.Title, item.Summary, item.Content, item.Author, strings.Join(item.Categories, " "),
+		item.ID, item.Link, item.GUID, item.Author,
+		item.SourceName, strings.Join(item.Categories, " "),
 	}, "\n"))
 	return strings.Contains(haystack, strings.ToLower(q.Q))
 }
@@ -308,6 +329,11 @@ func publicFeedQuery(r *http.Request, page, defaultSize int) feed.Query {
 	if pageSize > 200 {
 		pageSize = 200
 	}
+	// This is the unauthenticated reader path, so the class is hard-pinned to
+	// public and any caller-supplied ?acl= is ignored outright. Reading the
+	// parameter here would let anyone ask the server for private and protected
+	// items; the filter has to be decided by the route, not the request.
+	// Authenticated callers go through handleFeedItems instead.
 	return feed.Query{
 		Page:     page,
 		PageSize: pageSize,
@@ -315,6 +341,7 @@ func publicFeedQuery(r *http.Request, page, defaultSize int) feed.Query {
 		Source:   strings.TrimSpace(r.URL.Query().Get("source")),
 		Category: strings.TrimSpace(r.URL.Query().Get("category")),
 		Since:    parsePostTime(strings.TrimSpace(r.URL.Query().Get("since"))),
+		AclClass: feed.ACLPublic,
 	}
 }
 

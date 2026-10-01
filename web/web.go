@@ -26,11 +26,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	atpweb "azzurrotech/atp/web"
 	"azzurrotech/stenella/atpclient"
 	"azzurrotech/stenella/billing"
+	"azzurrotech/stenella/crypt"
 	"azzurrotech/stenella/feed"
 	"azzurrotech/stenella/links"
 )
@@ -68,13 +70,19 @@ type Config struct {
 
 // Server is a configured stenella instance.
 type Server struct {
-	cfg     Config
-	root    string
-	atpSvc  *atpweb.ATPService
-	atp     *atpclient.Client
-	feeds   *feed.Engine
-	links   *links.Store
-	shares  *links.Shares
+	cfg    Config
+	root   string
+	atpSvc *atpweb.ATPService
+	atp    *atpclient.Client
+	keys   *crypt.KeyStore
+	feeds  *feed.Engine
+	links  *links.Store
+	shares *links.Shares
+	collab *collabStore
+	sweep  *sweeper
+	// signup rate-limits self-service provisioning. It is per server so a test
+	// binary running many servers does not share one budget.
+	signup  *signupLimiter
 	income  *billing.Calculator
 	sess    *sessionStore
 	libs    map[string][]byte
@@ -82,6 +90,53 @@ type Server struct {
 
 	templates *template.Template
 	mux       *http.ServeMux
+
+	// background counts the fetch/mirror goroutines a request spawns so they can
+	// outlive the response. They are short-lived: Wait blocks until they finish,
+	// which lets a caller (or a test's cleanup) be sure nothing is still writing
+	// under the data root.
+	background sync.WaitGroup
+
+	// loops holds the long-running background workflows — the feed refresher and
+	// the retention sweep. They are counted separately from background because
+	// they run for the life of the process: folding them into Wait would make it
+	// block forever, and leaving them untracked would let a shutdown race them.
+	loops    sync.WaitGroup
+	loopCtx  context.Context
+	stopLoop context.CancelFunc
+}
+
+// trackBackground runs fn on a new goroutine counted by background.
+func (s *Server) trackBackground(fn func()) {
+	s.background.Add(1)
+	go func() {
+		defer s.background.Done()
+		fn()
+	}()
+}
+
+// trackLoop runs fn as a long-lived background workflow. It returns immediately;
+// the loop stops when Close cancels the server's context.
+func (s *Server) trackLoop(fn func(ctx context.Context)) {
+	s.loops.Add(1)
+	go func() {
+		defer s.loops.Done()
+		fn(s.loopCtx)
+	}()
+}
+
+// Wait blocks until every background fetch and mirror started by a request has
+// completed. It deliberately does not wait for the long-running workflows — use
+// Close for that.
+func (s *Server) Wait() { s.background.Wait() }
+
+// Close stops the background workflows and waits for them, then drains any
+// request-spawned work. It is safe to call more than once, and must be called
+// before the data root goes away so no loop is still writing to it.
+func (s *Server) Close() {
+	s.stopLoop()
+	s.loops.Wait()
+	s.Wait()
 }
 
 // New builds the embedded atp service plus stenella's routes.
@@ -128,21 +183,40 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	fe, err := feed.New(feed.Options{Root: filepath.Join(cfg.Root, "stenella")})
+	// The key store is built before the feed engine because every cached item
+	// body is sealed with it on write and opened on read.
+	keys := crypt.New(atp, cfg.AtpSecret)
+
+	fe, err := feed.New(feed.Options{
+		Root:   filepath.Join(cfg.Root, "stenella"),
+		Cipher: keys,
+	})
 	if err != nil {
 		return nil, err
 	}
+	// The link list displays item titles, which are encrypted at rest; point it
+	// at the engine, which already holds the plaintext copy for rendering.
+	lnk := links.New(cfg.Root, atp)
+	lnk.SetTitleResolver(fe)
+
+	loopCtx, stopLoop := context.WithCancel(context.Background())
 	s := &Server{
-		cfg:     cfg,
-		root:    cfg.Root,
-		atpSvc:  atpSvc,
-		atp:     atp,
-		feeds:   fe,
-		links:   links.New(cfg.Root, atp),
-		shares:  links.NewShares(cfg.Root, atp),
-		sess:    newSessionStore(),
-		libs:    cfg.Libs,
-		baseURL: strings.TrimSuffix(cfg.PublicBase, "/"),
+		loopCtx:  loopCtx,
+		stopLoop: stopLoop,
+		cfg:      cfg,
+		root:     cfg.Root,
+		atpSvc:   atpSvc,
+		atp:      atp,
+		keys:     keys,
+		feeds:    fe,
+		links:    lnk,
+		shares:   links.NewShares(cfg.Root, atp),
+		collab:   newCollab(atp, keys, itemFinder(fe)),
+		sweep:    newSweeper(),
+		signup:   newSignupLimiter(),
+		sess:     newSessionStore(),
+		libs:     cfg.Libs,
+		baseURL:  strings.TrimSuffix(cfg.PublicBase, "/"),
 	}
 	s.income, err = billing.New(cfg.Root, atp)
 	if err != nil {
@@ -160,6 +234,13 @@ func New(cfg Config) (*Server, error) {
 // mux handles the remaining platform namespace.
 func (s *Server) Handler() http.Handler {
 	return s.hostDispatch(s.atpSvc.Middleware(s.siteDataPathGuard(s.mux)))
+}
+
+// itemFinder adapts the feed engine to the collaboration store's notion of a
+// live item, so a pin or comment on a just-fetched item is accepted before the
+// pod mirror has caught up.
+func itemFinder(fe *feed.Engine) ItemFinder {
+	return func(client, id string) bool { return fe.ItemByID(client, id) != nil }
 }
 
 // normalizeSiteHosts returns a private, canonical copy of the host map. Host
@@ -469,6 +550,12 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /s/static/{file...}", s.handleStatic)
 	m.HandleFunc("GET /s/data/{client}/{table...}", s.handleSiteData)
 
+	// Public self-service signup. Provisioning is the only unauthenticated
+	// mutating endpoint on the platform, so it is rate limited and answers only
+	// once per client id.
+	m.HandleFunc("GET /s/signup", s.handleSignupPage)
+	m.HandleFunc("POST /s/api/signup", s.handleSignup)
+
 	// Client sessions.
 	m.HandleFunc("POST /s/api/client/login", s.handleClientLogin)
 	m.HandleFunc("POST /s/api/client/logout", s.handleClientLogout)
@@ -487,6 +574,22 @@ func (s *Server) routes() {
 	m.Handle("GET /s/api/portal/links", s.clientGate(s.handleListLinks))
 	m.Handle("POST /s/api/portal/links", s.clientGate(s.handleCreateLink))
 	m.Handle("DELETE /s/api/portal/links/{id}", s.clientGate(s.handleDeleteLink))
+
+	// Collaboration: comments, pins and the item-level link graph. Comment bodies
+	// arrive already encrypted (encrypt-before-submit), so the portal never sees
+	// them in the clear.
+	m.Handle("GET /s/api/portal/items/comments", s.clientGate(s.handleListComments))
+	m.Handle("POST /s/api/portal/items/comments", s.clientGate(s.handleCreateComment))
+	m.Handle("DELETE /s/api/portal/items/comments/{id}", s.clientGate(s.handleDeleteComment))
+	m.Handle("POST /s/api/portal/items/pin", s.clientGate(s.handlePinItem))
+	m.Handle("DELETE /s/api/portal/items/pin", s.clientGate(s.handleUnpinItem))
+	m.Handle("GET /s/api/portal/items/pins", s.clientGate(s.handleListPins))
+
+	// Retention and the content key. The passphrase is the browser's half of the
+	// envelope: it is released only to an authenticated session of this client.
+	m.Handle("GET /s/api/portal/retention", s.clientGate(s.handleRetentionStatus))
+	m.Handle("POST /s/api/portal/retention/sweep", s.clientGate(s.handleRetentionSweep))
+	m.Handle("GET /s/api/portal/vault", s.clientGate(s.handleContentKey))
 
 	m.Handle("GET /s/api/portal/shares", s.clientGate(s.handleListShares))
 	m.Handle("POST /s/api/portal/shares", s.clientGate(s.handleCreateShare))
@@ -532,6 +635,9 @@ func (s *Server) routes() {
 	m.Handle("GET /s/api/admin/feeds", s.adminGate(s.handleAdminFeeds))
 	m.Handle("GET /s/api/admin/config", s.adminGate(s.handleAdminConfig))
 	m.Handle("PUT /s/api/admin/config", s.adminGate(s.handleAdminPutConfig))
+	m.Handle("GET /s/api/admin/usage", s.adminGate(s.handleAdminUsage))
+	m.Handle("POST /s/api/admin/retention/sweep", s.adminGate(s.handleAdminSweep))
+	m.Handle("GET /s/api/admin/retention", s.adminGate(s.handleAdminRetention))
 
 	// Public share JSON (for vidi embedding) and share page.
 	m.HandleFunc("GET /s/api/x/{id}", s.handleShareJSON)
@@ -564,30 +670,72 @@ func secretEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// itemRecord builds the pod row for one feed item. Only envelope metadata and
+// ciphertext are written: pod must never receive a plaintext body, because pod
+// is the durable store and outlives any process (plan §4.2).
+func (s *Server) itemRecord(it *feed.Item) map[string]string {
+	rec := map[string]string{
+		"id":            it.ID,
+		"source_id":     it.SourceID,
+		"source_name":   it.SourceName,
+		"link":          it.Link,
+		"guid":          it.GUID,
+		"author":        it.Author,
+		"categories":    strings.Join(it.Categories, "|"),
+		"acl_class":     feed.NormalizeACLClass(it.ACLClass),
+		"content_bytes": strconv.Itoa(it.ContentBytes),
+		"pin_status":    strconv.FormatBool(it.Pinned),
+		"published":     it.Published.Format(time.RFC3339),
+		"updated":       it.Updated.Format(time.RFC3339),
+		"fetched":       it.Fetched.Format(time.RFC3339),
+	}
+	if it.TitleEnc != "" {
+		rec["title_enc"] = it.TitleEnc
+	}
+	if it.SummaryEnc != "" {
+		rec["summary_enc"] = it.SummaryEnc
+	}
+	if it.ContentEnc != "" {
+		rec["content_enc"] = it.ContentEnc
+	}
+	return rec
+}
+
+// sealItem fills an item's ciphertext fields from its plaintext bodies and clears
+// the plaintext. It is the last hop before disk, so this is what turns an
+// in-memory item into something safe to persist.
+func (s *Server) sealItem(client string, it *feed.Item) {
+	if it.TitleEnc == "" && it.Title != "" {
+		if enc, err := s.keys.Seal(client, it.Title); err == nil {
+			it.TitleEnc = enc
+		}
+	}
+	if it.SummaryEnc == "" && it.Summary != "" {
+		if enc, err := s.keys.Seal(client, it.Summary); err == nil {
+			it.SummaryEnc = enc
+		}
+	}
+	if it.ContentEnc == "" && it.Content != "" {
+		if enc, err := s.keys.Seal(client, it.Content); err == nil {
+			it.ContentEnc = enc
+		}
+	}
+	it.ContentBytes = len(it.Content)
+}
+
 // mirrorToPod writes a client's fetched items into their pod items table so
 // the feed is addressable as database rows (rendered by vidi, linkable,
 // shareable). The id is the stable feed item hash.
+//
+// The item is sealed on a copy: the engine's cache keeps these items in
+// plaintext for rendering, and blanking that copy would empty the feed page.
 func (s *Server) mirrorToPod(client string, fetched *feed.FetchedFeed) {
 	table := links.ItemsTable(client)
 	for i := range fetched.Items {
-		it := &fetched.Items[i]
-		cats := strings.Join(it.Categories, "|")
-		_, err := s.atp.UpsertRecord(table, map[string]string{
-			"id":          it.ID,
-			"source_id":   it.SourceID,
-			"source_name": it.SourceName,
-			"title":       it.Title,
-			"link":        it.Link,
-			"guid":        it.GUID,
-			"author":      it.Author,
-			"summary":     it.Summary,
-			"content":     it.Content,
-			"categories":  cats,
-			"published":   it.Published.Format(time.RFC3339),
-			"updated":     it.Updated.Format(time.RFC3339),
-			"fetched":     it.Fetched.Format(time.RFC3339),
-		})
-		if err != nil && !isNotFound(err) {
+		cp := fetched.Items[i]
+		it := &cp
+		s.sealItem(client, it)
+		if _, err := s.atp.UpsertRecord(table, s.itemRecord(it)); err != nil && !isNotFound(err) {
 			log.Printf("web: mirror %s item %s: %v", client, it.ID, err)
 		}
 	}
@@ -605,8 +753,47 @@ func (s *Server) secretResolver() feed.SecretResolver {
 }
 
 // Background starts the feed refresher and atp's own maintenance.
+// Background starts the long-running workflows: the feed refresher and the
+// hourly retention sweep. It returns immediately.
+//
+// The two are independent loops on purpose. A slow upstream fetch must not delay
+// a sweep, and a sweep that fails must not stop refreshes.
+//
+// The caller's ctx is honoured for the feed refresher, which is how a host
+// application stops a refresh it started; the retention sweep always runs under
+// the server's own context and stops at Close, so an unrelated cancelled request
+// context cannot silently disable retention.
 func (s *Server) Background(ctx context.Context) {
-	go s.feeds.Run(ctx, s.secretResolver())
+	// The refresher runs under whichever of the caller's context or the server's
+	// stops first, so both a host shutting its own context down and Close stop
+	// it. The sweep only runs under the server's context: retention is not
+	// something a caller should be able to disable by cancelling a request
+	// context it happened to pass in.
+	_, stopMerged := mergeContexts(ctx, s.loopCtx)
+	s.trackLoop(func(loopCtx context.Context) {
+		defer stopMerged()
+		s.feeds.Run(loopCtx, s.secretResolver())
+	})
+	s.trackLoop(s.retentionLoop)
+}
+
+// mergeContexts returns a context cancelled when any of its inputs is. The
+// returned cancel must be called to release the watcher goroutine.
+func mergeContexts(ctxs ...context.Context) (context.Context, context.CancelFunc) {
+	out, cancel := context.WithCancel(context.Background())
+	for _, ctx := range ctxs {
+		if ctx == nil {
+			continue
+		}
+		go func(c context.Context) {
+			select {
+			case <-c.Done():
+				cancel()
+			case <-out.Done():
+			}
+		}(ctx)
+	}
+	return out, cancel
 }
 
 // IsNotFound maps error helpers to a sentinel for the mirror loop.

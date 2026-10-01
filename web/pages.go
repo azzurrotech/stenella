@@ -10,7 +10,7 @@ import (
 	"azzurrotech/stenella/feed"
 )
 
-//go:embed templates/*.html static/style.css static/app.js
+//go:embed templates/*.html static/style.css static/app.js static/collaboration.js
 var assets embed.FS
 
 // tplFuncs are shared template helpers.
@@ -132,8 +132,8 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		w.Write(b)
 		return
-	case "app.js":
-		b, _ := assets.ReadFile("static/app.js")
+	case "app.js", "collaboration.js":
+		b, _ := assets.ReadFile("static/" + name)
 		if b == nil {
 			http.NotFound(w, r)
 			return

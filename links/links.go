@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"azzurrotech/stenella/atpclient"
@@ -59,6 +60,9 @@ type Link struct {
 type Store struct {
 	root string
 	atp  *atpclient.Client
+
+	mu     sync.RWMutex
+	titles TitleResolver
 }
 
 // New creates a Store rooted at the shared data root (the same root atp uses,
@@ -75,6 +79,27 @@ func LinksTable(client string) string { return client + "/links" }
 
 // SharesTable is the pod table holding a client's shares.
 func SharesTable(client string) string { return client + "/shares" }
+
+// EnsureSchema creates a client's links and shares tables if absent. Pod creates
+// tables on first write anyway; doing it at provisioning time means a new
+// client sees an empty graph and an empty share list rather than a 404.
+func (s *Store) EnsureSchema(client string) error {
+	for _, spec := range []struct {
+		table string
+		cols  []string
+	}{
+		{LinksTable(client), []string{
+			"from_id", "to_kind", "to_id", "to_url",
+			"relation", "label", "created",
+		}},
+		{SharesTable(client), []string{"table_name", "record_id", "token", "created"}},
+	} {
+		// An existing table is the normal case on every call after the first, so
+		// pod's "exists" error is deliberately swallowed rather than returned.
+		_ = s.atp.CreateTable(spec.table, spec.cols)
+	}
+	return nil
+}
 
 // Create validates both ends through atp, stores the link record in the
 // client's pod namespace, and materializes the symlink junction.
@@ -207,6 +232,73 @@ func recordSymlink(dir, name, root, client, table, id string) error {
 	return os.Symlink(rel, filepath.Join(dir, name))
 }
 
+// TitleResolver supplies the display title and link for an item id. Item bodies
+// are encrypted at rest, so the pod row only carries a title envelope; anything
+// that wants to *show* a title has to go through a resolver that can open it.
+// Keeping it an interface means links does not need a key-management
+// implementation — the feed engine, which already holds items in plaintext for
+// rendering, wires itself in at startup.
+type TitleResolver interface {
+	ItemTitle(client, id string) (title, link string, ok bool)
+}
+
+// SetTitleResolver installs the resolver. It is safe to call before or after the
+// store is in use; List falls back to the link-only behaviour when unset.
+func (s *Store) SetTitleResolver(r TitleResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.titles = r
+}
+
+// title resolves one end of a link, preferring the resolver and falling back to
+// the pod row's clear link column (and a blank title) when it cannot.
+func (s *Store) title(table, client, id string) (title, link string) {
+	if id == "" {
+		return "", ""
+	}
+	s.mu.RLock()
+	res := s.titles
+	s.mu.RUnlock()
+	if res != nil {
+		if t, l, ok := res.ItemTitle(client, id); ok {
+			return t, l
+		}
+	}
+	// The pod row carries no plaintext title any more — only a title envelope —
+	// so the fallback can supply the link and nothing else. Returning a blank
+	// title is the honest answer; inventing one from the ciphertext would be
+	// worse than admitting the resolver is not wired.
+	if rec, err := s.atp.GetRecord(table, id); err == nil {
+		return "", rec["link"]
+	}
+	return "", ""
+}
+
+// Edges returns a client's links without title enrichment.
+//
+// List is for display and costs one record read per endpoint. Edges is for
+// traversal — the retention sweep walks the whole graph — and pays a single
+// table query instead. Keeping them separate is what makes a full-graph walk
+// affordable.
+func (s *Store) Edges(client string) ([]Link, error) {
+	if !validIdentifier(client) {
+		return nil, errors.New("invalid client")
+	}
+	recs, _, err := s.atp.QueryTable(LinksTable(client), atpclient.TableQuery{Limit: 100000})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Link, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, Link{
+			ID: r["id"], FromID: r["from_id"], ToKind: r["to_kind"], ToID: r["to_id"],
+			ToURL: r["to_url"], Relation: r["relation"], Label: r["label"],
+			Created: r["created"],
+		})
+	}
+	return out, nil
+}
+
 // List returns a client's links, newest first, enriched with the titles of
 // both ends.
 func (s *Store) List(client string, limit, offset int) ([]Link, error) {
@@ -234,21 +326,12 @@ func (s *Store) List(client string, limit, offset int) ([]Link, error) {
 			ToURL: r["to_url"], Relation: r["relation"], Label: r["label"],
 			Created: r["created"],
 		}
-		enrich := func(client, table, id string) (title, link string) {
-			if id == "" {
-				return "", ""
-			}
-			if rec, err := s.atp.GetRecord(table, id); err == nil {
-				return rec["title"], rec["link"]
-			}
-			return "", ""
-		}
-		ln.FromTitle, ln.FromLink = enrich(client, ItemsTable(client), ln.FromID)
+		ln.FromTitle, ln.FromLink = s.title(ItemsTable(client), client, ln.FromID)
 		if ln.ToKind == ToURL {
 			ln.ToTitle = ln.ToURL
 			ln.ToLink = ln.ToURL
 		} else {
-			ln.ToTitle, ln.ToLink = enrich(client, ItemsTable(client), ln.ToID)
+			ln.ToTitle, ln.ToLink = s.title(ItemsTable(client), client, ln.ToID)
 		}
 		out = append(out, ln)
 	}

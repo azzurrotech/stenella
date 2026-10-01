@@ -39,6 +39,11 @@ func newTestWeb(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
+	// Requests spawn fetch/mirror goroutines that write under root, and
+	// Background starts long-running loops. Let everything stop before TempDir
+	// cleanup runs, or the removal races them and the test fails with "directory
+	// not empty".
+	t.Cleanup(s.Close)
 	return s, root
 }
 
@@ -215,17 +220,38 @@ func TestWebWalkthrough(t *testing.T) {
 	}
 
 	// ---- portal item listing ---------------------------------------------
+	// The portal is the one caller that holds the content key, so it gets
+	// envelopes rather than plaintext: the browser opens the bodies itself. This
+	// is what makes the client-side full-text search possible, and it is
+	// asserted here end to end — the JSON carries no title, and the envelope
+	// decrypts back to it.
 	var items struct {
-		Total int `json:"total"`
-		Items []struct {
-			ID    string `json:"id"`
-			Title string `json:"title"`
-			Link  string `json:"link"`
+		Total     int  `json:"total"`
+		Encrypted bool `json:"encrypted"`
+		Items     []struct {
+			ID      string `json:"id"`
+			Title   string `json:"title"`
+			TitleEn string `json:"title_enc"`
+			Link    string `json:"link"`
 		} `json:"items"`
 	}
-	mustDecode(t, webReq(t, h, "GET", "/s/api/portal/items?client=acme&page=1&pageSize=20", "", []*http.Cookie{portal}), &items)
-	if items.Total != 2 || items.Items[0].Title != "Second story" {
+	raw := webReq(t, h, "GET", "/s/api/portal/items?client=acme&page=1&pageSize=20", "", []*http.Cookie{portal})
+	mustDecode(t, raw, &items)
+	if items.Total != 2 || !items.Encrypted {
 		t.Fatalf("portal items = %+v", items)
+	}
+	if strings.Contains(raw.Body.String(), "Second story") || strings.Contains(raw.Body.String(), "Full content here") {
+		t.Fatalf("the portal items payload carried a plaintext body: %s", raw.Body.String())
+	}
+	if items.Items[0].TitleEn == "" || items.Items[0].Title != "" {
+		t.Fatalf("portal item 0 = %+v, want an envelope and no title", items.Items[0])
+	}
+	opened, err := s.keys.Open("acme", items.Items[0].TitleEn)
+	if err != nil {
+		t.Fatalf("Open(title_enc): %v", err)
+	}
+	if opened != "Second story" {
+		t.Fatalf("opened title = %q, want %q", opened, "Second story")
 	}
 	firstID := items.Items[1].ID // "First story" (newest-first)
 
@@ -466,6 +492,29 @@ func TestPortalGateRejectsAnonymous(t *testing.T) {
 		if rec := webReq(t, h, "GET", path, "", nil); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s: %d, want 401", path, rec.Code)
 		}
+	}
+}
+
+// A session belonging to a different client is a 403, not a 401. Both deny
+// access, but they are different answers: a 401 tells a signed-in user to sign
+// in again, which cannot help, because signing in again lands them in the same
+// other client's session.
+func TestPortalGateDistinguishesWrongClientFromAnonymous(t *testing.T) {
+	s, _ := newTestWeb(t)
+	h := s.Handler()
+	const path = "/s/api/portal/items?client=acme"
+
+	other := signedIn(t, s, "otherco")
+	rec := webReq(t, h, "GET", path, "", []*http.Cookie{other})
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("another client's session: %d, want 403", rec.Code)
+	}
+
+	// The same client's own session passes, so the 403 above is about the
+	// mismatch rather than about the endpoint being closed.
+	own := signedIn(t, s, "acme")
+	if rec := webReq(t, h, "GET", path, "", []*http.Cookie{own}); rec.Code == http.StatusForbidden {
+		t.Error("the owning client's session was refused")
 	}
 }
 

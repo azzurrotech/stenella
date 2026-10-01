@@ -129,6 +129,13 @@ func (s *Server) requireClient(r *http.Request, client string) error {
 	if s.isAdmin(r) {
 		return nil
 	}
+	// The two failures mean different things to a caller, so they are different
+	// errors: no usable session at all is 401, while a valid session belonging to
+	// some other client is 403. Collapsing them into one would tell a signed-in
+	// user to re-authenticate when re-authenticating cannot help.
+	if s.sessionClient(r) != "" {
+		return errForbidden
+	}
 	return errUnauthorized
 }
 

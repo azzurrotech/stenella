@@ -1,0 +1,52 @@
+{{define "signup"}}<!DOCTYPE html>
+<html lang="en">
+<head>{{template "head" .}}</head>
+<body data-page="signup">
+{{template "nav" .}}
+<main class="wrap narrow">
+  <section class="panel">
+    <h1>Create a workspace</h1>
+    <p class="muted">You get a site, a database namespace, a private feed and a
+      content key. No configuration is required and nothing you do here is shared
+      with another client.</p>
+
+    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+
+    <form id="signup-form" method="post" action="/s/api/signup">
+      <label>Client id
+        <input type="text" name="id" id="signup-id" required value="{{.Client}}"
+               pattern="[a-z0-9][a-z0-9._\-]{1,62}[a-z0-9]"
+               placeholder="acme" autocomplete="off" autocapitalize="none" spellcheck="false">
+        <small class="muted">3–64 characters: a–z, 0–9, dot, dash, underscore.
+          This becomes your site path and cannot be changed later.</small>
+      </label>
+      <label>Display name
+        <input type="text" name="name" id="signup-name" placeholder="Acme Inc" autocomplete="organization">
+      </label>
+      <div class="row">
+        <button class="btn primary" type="submit">Create workspace</button>
+        <a class="btn ghost" href="/">Cancel</a>
+      </div>
+    </form>
+  </section>
+
+  <section id="signup-result" class="panel hidden">
+    <h2>Keep these two values</h2>
+    <p class="error" role="alert">They are shown once and never again. Store them
+      in your password manager now.</p>
+    <dl class="kv">
+      <dt>Portal secret</dt>
+      <dd><code id="got-secret" class="copyable"></code></dd>
+      <dt>Content passphrase</dt>
+      <dd><code id="got-pass" class="copyable"></code></dd>
+    </dl>
+    <p class="muted">The content passphrase decrypts your feed bodies in the
+      browser and encrypts anything you write. The server cannot read either
+      one.</p>
+    <a class="btn primary" id="goto-portal" href="/">Open the portal</a>
+  </section>
+</main>
+{{template "scripts" .}}
+</body>
+</html>
+{{end}}

@@ -13,9 +13,13 @@
 </header>
 {{end}}
 
+{{/* The four Emperor42 libraries load first so both bundles can feature-detect
+     them: app.js drives every page, collaboration.js only the ones where the
+     browser is holding a content key. */}}
 {{define "scripts"}}<script src="/s/static/lib/veni.js"></script>
 <script src="/s/static/lib/vidi.js"></script>
 <script src="/s/static/lib/vici.js"></script>
 <script src="/s/static/lib/vini.js"></script>
 <script src="/s/static/app.js"></script>
+<script src="/s/static/collaboration.js"></script>
 {{end}}

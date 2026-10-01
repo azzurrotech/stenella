@@ -34,6 +34,9 @@ func newTestWebHostedWithRouting(t *testing.T, siteHosts map[string]string, plat
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
+	// Requests may spawn background fetches that still write under root when
+	// the test finishes; drain them before TempDir cleanup.
+	t.Cleanup(s.Wait)
 
 	// Seed the azzurrotech client with a song silo index file and a pod table.
 	if err := s.atp.CreateClient("azzurrotech", "Azzurro Technology", "azzurro.tech hosted site"); err != nil {

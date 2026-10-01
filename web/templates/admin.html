@@ -15,7 +15,8 @@
   <section id="summary-cards" class="cards small"></section>
 
   <nav id="tabs" class="tabs">
-    <button data-tab="income" class="active">Income</button>
+    <button data-tab="usage" class="active">Usage</button>
+    <button data-tab="income">Income</button>
     <button data-tab="clients">Clients</button>
     <button data-tab="feeds">Feeds</button>
     <button data-tab="secrets">Secrets</button>
@@ -23,7 +24,17 @@
   </nav>
 
   <section id="panes" class="panes">
-    <div id="pane-income" class="pane active">
+    <div id="pane-usage" class="pane active">
+      <section id="usage-view" class="panel"></section>
+      <section class="panel">
+        <h2>Retention</h2>
+        <div class="toolbar">
+          <button id="retention-sweep-btn" class="btn">Run sweep now</button>
+        </div>
+        <div id="retention-view"></div>
+      </section>
+    </div>
+    <div id="pane-income" class="pane">
       <div id="income-view" class="panel"></div>
     </div>
     <div id="pane-clients" class="pane">
