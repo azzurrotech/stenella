@@ -323,22 +323,6 @@ func looksLikeHTML(contentType string, body []byte) bool {
 		(strings.Contains(low, "<head") && strings.Contains(low, "<body"))
 }
 
-// GuessSiteKind reports whether a URL should be treated as a generic site. A
-// URL with a feed-ish extension is not, even if the server returns HTML for it —
-// that is a misconfigured feed and should report as such.
-func GuessSiteKind(rawURL, contentType string, body []byte) bool {
-	low := strings.ToLower(rawURL)
-	for _, ext := range []string{".rss", ".atom", ".rdf", ".xml", ".json", ".opml"} {
-		if strings.Contains(low, ext) {
-			return false
-		}
-	}
-	if contentType != "" && !looksLikeHTML(contentType, body) {
-		return false
-	}
-	return looksLikeHTML(contentType, body)
-}
-
 func appendUnique(list []string, v string) []string {
 	for _, existing := range list {
 		if strings.EqualFold(existing, v) {

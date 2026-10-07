@@ -35,6 +35,7 @@ import (
 	"azzurrotech/stenella/crypt"
 	"azzurrotech/stenella/feed"
 	"azzurrotech/stenella/links"
+	"azzurrotech/stenella/netguard"
 )
 
 // Config wires the embedded atp orchestrator and stenella itself.
@@ -66,6 +67,12 @@ type Config struct {
 	// stenella platform (portal for the mapped client). It is normalized to
 	// an absolute, boundary-safe path and defaults to "/platform" when empty.
 	PlatformPath string
+	// TrustProxy allows the per-IP rate limiters to read X-Forwarded-For.
+	// It is OFF by default because the header is client-controlled on a direct
+	// internet deployment: a caller could rotate it to evade the signup and
+	// login limits. Turn it on only when a proxy you control (e.g. Caddy) sets
+	// it — main.go exposes it as --trust-proxy / $STENELLA_TRUST_PROXY=1.
+	TrustProxy bool
 }
 
 // Server is a configured stenella instance.
@@ -82,7 +89,11 @@ type Server struct {
 	sweep  *sweeper
 	// signup rate-limits self-service provisioning. It is per server so a test
 	// binary running many servers does not share one budget.
-	signup  *signupLimiter
+	signup *rateLimiter
+	// login rate-limits the unauthenticated portal login for the same reason:
+	// without a limit it is an online password-guessing oracle. Separate
+	// instance, same shared limiter type (see ratelimit.go).
+	login   *rateLimiter
 	income  *billing.Calculator
 	sess    *sessionStore
 	libs    map[string][]byte
@@ -214,6 +225,7 @@ func New(cfg Config) (*Server, error) {
 		collab:   newCollab(atp, keys, itemFinder(fe)),
 		sweep:    newSweeper(),
 		signup:   newSignupLimiter(),
+		login:    newLoginLimiter(),
 		sess:     newSessionStore(),
 		libs:     cfg.Libs,
 		baseURL:  strings.TrimSuffix(cfg.PublicBase, "/"),
@@ -618,6 +630,7 @@ func (s *Server) routes() {
 	m.Handle("GET /s/api/portal/usage", s.clientGate(s.handleClientUsage))
 
 	m.Handle("POST /s/api/portal/keys", s.clientGate(s.handleIssueKey))
+	m.Handle("POST /s/api/portal/keys/magic", s.clientGate(s.handleIssueMagicLink))
 	m.Handle("GET /s/api/portal/keys/verify", s.clientGate(s.handleVerifyKey))
 	m.Handle("POST /s/api/portal/revoke", s.clientGate(s.handleRevokeKey))
 
@@ -639,6 +652,22 @@ func (s *Server) routes() {
 	m.Handle("POST /s/api/admin/retention/sweep", s.adminGate(s.handleAdminSweep))
 	m.Handle("GET /s/api/admin/retention", s.adminGate(s.handleAdminRetention))
 
+	// Admin: shepherd ops (global)
+	m.Handle("GET /s/api/admin/shepherd/firewall/rules", s.adminGate(s.handleShepherdFirewallRulesList))
+	m.Handle("POST /s/api/admin/shepherd/firewall/rules", s.adminGate(s.handleShepherdFirewallRulesAdd))
+	m.Handle("DELETE /s/api/admin/shepherd/firewall/rules/{id}", s.adminGate(s.handleShepherdFirewallRuleDelete))
+	m.Handle("GET /s/api/admin/shepherd/ratelimit/status", s.adminGate(s.handleShepherdRateLimitStatus))
+	m.Handle("POST /s/api/admin/shepherd/ratelimit/reset", s.adminGate(s.handleShepherdRateLimitReset))
+	m.Handle("GET /s/api/admin/shepherd/upstreams", s.adminGate(s.handleShepherdUpstreamsList))
+	m.Handle("POST /s/api/admin/shepherd/upstreams", s.adminGate(s.handleShepherdUpstreamsAdd))
+	m.Handle("DELETE /s/api/admin/shepherd/upstreams/{prefix}", s.adminGate(s.handleShepherdUpstreamDelete))
+	m.Handle("POST /s/api/admin/shepherd/keys", s.adminGate(s.handleShepherdKeys))
+	m.Handle("POST /s/api/admin/shepherd/keys/block", s.adminGate(s.handleShepherdKeysBlock))
+	m.Handle("POST /s/api/admin/shepherd/keys/magic", s.adminGate(s.handleShepherdKeysMagic))
+	m.Handle("POST /s/api/admin/shepherd/revoke", s.adminGate(s.handleShepherdRevoke))
+	m.Handle("POST /s/api/admin/shepherd/revoke/block", s.adminGate(s.handleShepherdRevokeBlock))
+	m.Handle("GET /s/api/admin/shepherd/jskey", s.adminGate(s.handleShepherdJSKey))
+
 	// Public share JSON (for vidi embedding) and share page.
 	m.HandleFunc("GET /s/api/x/{id}", s.handleShareJSON)
 }
@@ -655,9 +684,35 @@ func (s *Server) writeErr(w http.ResponseWriter, code int, msg string) {
 	s.writeJSON(w, code, map[string]any{"error": msg})
 }
 
-func (s *Server) readBody(r *http.Request, v any) error {
+// maxBodyBytes caps every JSON request body stenella decodes. 4 MiB matches
+// atp's own cap; without a limit an unauthenticated endpoint (login, signup)
+// would buffer an arbitrarily large body in memory, which is a one-request
+// memory-exhaustion DoS.
+const maxBodyBytes = 4 << 20
+
+// readBody decodes the request JSON into v, refusing bodies larger than
+// maxBodyBytes. On overflow MaxBytesReader returns *http.MaxBytesError, which
+// decodeBody reports with the endpoint's existing 400 {"error":"invalid body"}
+// shape; callers of readBody directly use their own message for any error.
+func (s *Server) readBody(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
+	// MaxBytesReader also tells net/http the request was too large, so the
+	// connection can be closed instead of silently serving a truncated body.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// decodeBody reads the JSON request body into v and reports whether the
+// handler may continue. A malformed body gets the standard 400
+// {"error": "invalid body"} written here, so each endpoint states only its own
+// request type and validation instead of repeating the same four lines.
+// Endpoints with a different error message keep calling readBody directly.
+func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := s.readBody(w, r, v); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid body")
+		return false
+	}
+	return true
 }
 
 // secretEqual is a constant-time string comparison used for portal logins.
@@ -684,10 +739,12 @@ func (s *Server) itemRecord(it *feed.Item) map[string]string {
 		"categories":    strings.Join(it.Categories, "|"),
 		"acl_class":     feed.NormalizeACLClass(it.ACLClass),
 		"content_bytes": strconv.Itoa(it.ContentBytes),
-		"pin_status":    strconv.FormatBool(it.Pinned),
-		"published":     it.Published.Format(time.RFC3339),
-		"updated":       it.Updated.Format(time.RFC3339),
-		"fetched":       it.Fetched.Format(time.RFC3339),
+		// No pin_status column: pin state lives in pod's pins table (served by
+		// GET /s/api/portal/items/pins), so mirroring it here would be a second
+		// source of truth that drifts the moment a pin is toggled.
+		"published": it.Published.Format(time.RFC3339),
+		"updated":   it.Updated.Format(time.RFC3339),
+		"fetched":   it.Fetched.Format(time.RFC3339),
 	}
 	if it.TitleEnc != "" {
 		rec["title_enc"] = it.TitleEnc
@@ -729,10 +786,10 @@ func (s *Server) sealItem(client string, it *feed.Item) {
 //
 // The item is sealed on a copy: the engine's cache keeps these items in
 // plaintext for rendering, and blanking that copy would empty the feed page.
-func (s *Server) mirrorToPod(client string, fetched *feed.FetchedFeed) {
+func (s *Server) mirrorToPod(client string, items []feed.Item) {
 	table := links.ItemsTable(client)
-	for i := range fetched.Items {
-		cp := fetched.Items[i]
+	for i := range items {
+		cp := items[i]
 		it := &cp
 		s.sealItem(client, it)
 		if _, err := s.atp.UpsertRecord(table, s.itemRecord(it)); err != nil && !isNotFound(err) {
@@ -752,7 +809,6 @@ func (s *Server) secretResolver() feed.SecretResolver {
 	}
 }
 
-// Background starts the feed refresher and atp's own maintenance.
 // Background starts the long-running workflows: the feed refresher and the
 // hourly retention sweep. It returns immediately.
 //
@@ -796,14 +852,18 @@ func mergeContexts(ctxs ...context.Context) (context.Context, context.CancelFunc
 	return out, cancel
 }
 
-// IsNotFound maps error helpers to a sentinel for the mirror loop.
+// isNotFound reports whether an error is a pod 404 (a missing table or record),
+// which the mirror loop skips rather than fails on.
 func isNotFound(err error) bool {
 	var he *atpclient.HTTPError
 	return errors.As(err, &he) && he.Status == http.StatusNotFound
 }
 
-// httpClient is shared by outgoing fetches (feeds and OPML imports).
-var httpClient = &http.Client{Timeout: 20 * time.Second}
+// httpClient is shared by outgoing fetches (feeds and OPML imports). Its
+// transport dials through netguard, so server-side fetches cannot reach
+// loopback/private/link-local addresses (SSRF) — the check runs per dial, so
+// every hop of a redirect chain is covered too.
+var httpClient = &http.Client{Timeout: 20 * time.Second, Transport: netguard.NewTransport()}
 
 func httpFetch(raw string) ([]byte, error) {
 	res, err := httpClient.Get(raw)

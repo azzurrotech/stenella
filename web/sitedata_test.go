@@ -62,6 +62,31 @@ func TestSanitizeHTMLEscapesUntrustedShareContent(t *testing.T) {
 	}
 }
 
+// The management tables (shares/links) and the collaboration/mirror tables
+// (comments, pins, items) never leak through the public endpoint. Comments and
+// pins are collaboration data (ciphertext bodies plus author tokens); items is
+// the ACL-stamped feed mirror whose private/protected rows are served only by
+// the public feed endpoints, which pin acl_class=public server-side.
+func TestSiteDataBlocksPrivateTables(t *testing.T) {
+	s := newTestWebHosted(t)
+
+	for _, table := range []string{
+		"shares", "links", "comments", "pins", "items",
+		"comments/nested", "pins/nested", "items/nested",
+	} {
+		rec := hostedReq(t, s, http.MethodGet, "http://localhost/s/data/azzurrotech/"+table)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("GET /s/data/../%s: got %d, want 403 (%s)", table, rec.Code, rec.Body.String())
+		}
+	}
+
+	// A client-authored table is exactly what the endpoint is for: still public.
+	rec := hostedReq(t, s, http.MethodGet, "http://localhost/s/data/azzurrotech/products")
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /s/data/azzurrotech/products: got %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestValidPublicTablePath(t *testing.T) {
 	for _, table := range []string{"products", "archive/2026", "a_b-c"} {
 		if !validPublicTablePath(table) {

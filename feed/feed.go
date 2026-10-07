@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"azzurrotech/stenella/netguard"
 )
 
 // Kind of a data source.
@@ -93,13 +95,15 @@ type Item struct {
 	// cached public item cannot be served after its source is tightened.
 	ACLClass string `json:"acl_class,omitempty"`
 
-	// Pinned marks an item the client explicitly kept, which exempts it from the
-	// retention sweep. The authoritative pin record lives in pod; this is the
-	// denormalized copy the engine reads when deciding what to prune.
-	Pinned bool `json:"pinned,omitempty"`
-
-	// CommentCount is the number of comment records referencing this item. A
-	// commented-on item is also exempt from retention.
+	// CommentCount is the number of comment records referencing this item. It is
+	// the denormalised hint the feed page renders; the authoritative record is
+	// the comments table in pod, and a commented-on item is also exempt from
+	// retention.
+	//
+	// There is deliberately no matching Pinned field: pin state is never
+	// denormalised onto an item (the web layer would have to look it up per item
+	// to keep it current), the UI reads it from GET …/items/pins, and the
+	// retention sweep reads the pins table directly.
 	CommentCount int `json:"comment_count,omitempty"`
 
 	// Source carries the subset of the owning source that a reader needs in
@@ -147,7 +151,6 @@ type Envelope struct {
 	ContentBytes int `json:"content_bytes,omitempty"`
 
 	ACLClass     string      `json:"acl_class,omitempty"`
-	Pinned       bool        `json:"pinned,omitempty"`
 	CommentCount int         `json:"comment_count,omitempty"`
 	Source       *ItemSource `json:"source,omitempty"`
 }
@@ -162,7 +165,7 @@ func (it Item) Envelope() Envelope {
 		Published: it.Published, Updated: it.Updated, Fetched: it.Fetched,
 		TitleEnc: it.TitleEnc, SummaryEnc: it.SummaryEnc, ContentEnc: it.ContentEnc,
 		ContentBytes: it.ContentBytes, ACLClass: itemACL(it),
-		Pinned: it.Pinned, CommentCount: it.CommentCount, Source: it.Source,
+		CommentCount: it.CommentCount, Source: it.Source,
 	}
 }
 
@@ -330,7 +333,14 @@ func New(opts Options) (*Engine, error) {
 		opts.Root = "./data"
 	}
 	if opts.HTTP == nil {
-		opts.HTTP = &http.Client{Timeout: 20 * time.Second}
+		// WHY: feed sources are operator/user-supplied URLs fetched server-side.
+		// Dialing through netguard refuses loopback/RFC1918/link-local targets
+		// (including the cloud metadata endpoint), and because the check is the
+		// transport's DialContext it is re-applied on every redirect hop.
+		opts.HTTP = &http.Client{
+			Timeout:   20 * time.Second,
+			Transport: netguard.NewTransport(),
+		}
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
@@ -1091,13 +1101,16 @@ func (e *Engine) Combined(client string, q Query) Page {
 			if q.AclClass != "" && itemACL(it) != NormalizeACLClass(q.AclClass) {
 				continue
 			}
-			if !q.Since.IsZero() && itemTime(it).Before(q.Since) {
+			if !q.Since.IsZero() && ItemTime(it).Before(q.Since) {
 				continue
 			}
+			// Category compares the publisher's own spelling exactly; the web
+			// layer's post feed folds case instead (free-form post records) —
+			// see postMatches in package web.
 			if q.Category != "" && !containsStr(it.Categories, q.Category) {
 				continue
 			}
-			if q.Q != "" && !itemMatches(it, q.Q) {
+			if q.Q != "" && !ItemMatches(it, q.Q) {
 				continue
 			}
 			seen[it.ID] = true
@@ -1107,7 +1120,7 @@ func (e *Engine) Combined(client string, q Query) Page {
 	e.mu.RUnlock()
 
 	sort.SliceStable(all, func(i, j int) bool {
-		a, b := itemTime(all[i]), itemTime(all[j])
+		a, b := ItemTime(all[i]), ItemTime(all[j])
 		if !a.Equal(b) {
 			return a.After(b)
 		}
@@ -1185,7 +1198,7 @@ func (e *Engine) Expired(client, sourceID string, cutoff time.Time) []string {
 	}
 	var out []string
 	for _, it := range cf.Items {
-		t := itemTime(it)
+		t := ItemTime(it)
 		if t.IsZero() || t.Before(cutoff) {
 			out = append(out, it.ID)
 		}
@@ -1242,21 +1255,14 @@ func (e *Engine) ItemTitle(client, id string) (title, link string, ok bool) {
 	return it.Title, it.Link, true
 }
 
-// Annotate stamps the collaboration facts the retention sweep and the UI need
-// onto a page of items: whether each is pinned and how many comments it has.
-// It is a single pass over the supplied sets rather than a lookup per item.
-func (e *Engine) Annotate(items []Item, pinned map[string]bool, commentCounts map[string]int) {
-	for i := range items {
-		if pinned[items[i].ID] {
-			items[i].Pinned = true
-		}
-		if n, ok := commentCounts[items[i].ID]; ok {
-			items[i].CommentCount = n
-		}
-	}
-}
+// Annotate, which stamped pin state and comment counts onto a page of items, is
+// gone: it had no callers, and the two facts it copied are now written where
+// they are known (Item.CommentCount's doc, and BumpCommentCount below).
 
-// ItemByID returns a single item from any enabled source (or nil).
+// ItemByID returns a single item from any enabled source (or nil). The result is
+// a copy: callers hold it after the lock is released, while saveCache and
+// replaceCache keep writing to the stored items. A caller that wants to change
+// an item must go through a mutating method rather than editing this copy.
 func (e *Engine) ItemByID(client, id string) *Item {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -1277,6 +1283,38 @@ func (e *Engine) ItemByID(client, id string) *Item {
 		}
 	}
 	return nil
+}
+
+// BumpCommentCount increments the stored copy of one item's comment counter.
+//
+// It exists because ItemByID hands out a copy: incrementing that copy would be
+// a no-op, and the counter the feed page reads (and the next cache write
+// persists) would stay at zero. The write takes the engine's lock, which is
+// what makes it safe against a fetch rewriting the same cache.
+//
+// The comment table in pod stays authoritative; this is only the denormalised
+// number rendered next to a thread, so a restart between the comment and the
+// next fetch leaves it behind rather than corrupting anything.
+func (e *Engine) BumpCommentCount(client, id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.byCli[client]
+	if !ok {
+		return false
+	}
+	for _, srcID := range s.order {
+		cf, ok := s.cache[srcID]
+		if !ok {
+			continue
+		}
+		for i := range cf.Items {
+			if cf.Items[i].ID == id {
+				cf.Items[i].CommentCount++
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ---- constants + helpers ------------------------------------------------------
@@ -1347,12 +1385,20 @@ func looksLikeFeedPath(lower string) bool {
 	return false
 }
 
-// itemMatches performs envelope-only matching. It deliberately does not read
-// Title/Summary/Content: the bodies are encrypted at rest and the plan forbids
-// server-side plaintext search, so a server query can only match what is in
-// the clear — source, categories, author, link, guid and the timestamps. Full
-// text search over decrypted bodies runs in the browser (plan §4.4).
-func itemMatches(it Item, q string) bool {
+// ItemMatches performs envelope-only matching of a free-text query against one
+// item. It deliberately does not read Title/Summary/Content: the bodies are
+// encrypted at rest and the plan forbids server-side plaintext search, so a
+// server query can only match what is in the clear — source name and source
+// URL, author, link, guid, id and the joined categories.
+//
+// Search semantics: q is trimmed, case is folded on both sides (a
+// case-insensitive substring test), and an empty query matches every item.
+// Full text search over decrypted bodies runs in the browser (plan §4.4).
+//
+// This is the single text matcher for the platform: the engine's Combined and
+// the web layer's post feed (postMatches) both call it, so a client-authored
+// post and a configured-source item are searched with identical semantics.
+func ItemMatches(it Item, q string) bool {
 	needle := strings.ToLower(strings.TrimSpace(q))
 	if needle == "" {
 		return true
@@ -1395,7 +1441,10 @@ func looksLikeProse(q string) bool {
 	return avg/len(fields) >= 4
 }
 
-func itemTime(it Item) time.Time {
+// ItemTime is the timestamp an item is ordered and windowed by: Published when
+// set, else Updated, else Fetched. It is exported because the web layer merges
+// posts with cached items and has to order and filter them by the same rule.
+func ItemTime(it Item) time.Time {
 	if !it.Published.IsZero() {
 		return it.Published
 	}

@@ -67,7 +67,7 @@ matters is which fields are **envelope** (clear) and which are **ciphertext**:
 
 | Record | Table | Envelope (clear) fields | Ciphertext fields |
 |---|---|---|---|
-| item | `<client>/items` | id, source id/name, link, guid, author, categories, published, fetched, `acl_class`, bytes, pin state | `title_enc`, `summary_enc`, `content_enc` |
+| item | `<client>/items` | id, source id/name, link, guid, author, categories, published, fetched, `acl_class`, bytes | `title_enc`, `summary_enc`, `content_enc` |
 | comment | `<client>/comments` | id, item ref, author token, created_at, bytes | `body_enc` |
 | pin | `<client>/pins` | id, item ref, created_by, created_at | — |
 | link | `<client>/links` | id, from_id, to_kind, to_id, to_url, relation, label, created | — |
@@ -79,8 +79,9 @@ require reading plaintext.
 ## Encryption, and where the boundary actually is
 
 - **Encrypted at rest, always.** Bodies are sealed with a per-client 32-byte
-  content key using the wire format `v1.<salt>.<iv>.<ct>` — PBKDF2-SHA256
-  ×100k → AES-256-GCM. That is exactly what `vici.encrypt`/`vici.decrypt` speak,
+  content key using the wire format `base64(salt).base64(iv).base64(ciphertext)`
+  — PBKDF2-SHA256 ×100k → AES-256-GCM. That is exactly what
+  `vici.encrypt`/`vici.decrypt` speak,
   so the browser opens an envelope with the stock library and no glue format.
 - **Encrypt-before-submit for authored content.** A comment body is encrypted in
   the browser and POSTed as ciphertext. The server stores the payload verbatim:
@@ -145,18 +146,20 @@ Flags (env fallbacks in parentheses):
 | `--root` | `./data` | shared data root (atp stores, pod records, feeds, links, shares) |
 | `--secret` | *(required)* `$STENELLA_SECRET` | master AES/HMAC secret, ≥ 32 bytes |
 | `--admin-user` | `admin` | atp administrator username |
-| `--admin-pass` | *(required)* `$STENELLA_ADMIN_PASSWORD` | atp administrator password |
+| `--admin-pass` | `admin` (`$STENELLA_ADMIN_PASSWORD`) | atp administrator password (a startup warning is logged if neither flag nor env is set) |
 | `--public-base` | `""` | absolute base URL for share links (e.g. `https://azzurro.tech`) |
 | `--libs-dir` | `static` | directory with the `veni/vidi/vici/vini` JS worktrees |
 | `--host-site` | azzurro.tech and www.azzurro.tech | map a public host to a client site at `/`; repeatable (`host=client`) |
 | `--platform-path` | `/platform` | mapped-host path that redirects to that client's portal |
+| `--trust-proxy` | `false` (`$STENELLA_TRUST_PROXY=1`) | trust `X-Forwarded-For` for rate-limit keys — only behind a proxy you control |
+| `--allow-private-fetch` | `false` (`$STENELLA_ALLOW_PRIVATE_FETCH=1`) | let server-side feed/OPML fetches reach loopback and private addresses (SSRF guard off) — dev/test only |
 
 ## Web surfaces
 
 | Path | Who | What |
 |---|---|---|
 | `/` | public | search / link homepage over everything hosted |
-| `/s/portal?c={client}` | client | the client portal (feed, database, sites, links, shares, billing) |
+| `/s/portal?client={client}` | client | the client portal (feed, database, sites, links, shares, billing) |
 | `/s/admin` | admin | the super-admin console (clients, secrets, feeds, income) |
 | `/s/feed/{client}` | public | a client's combined feed as HTML |
 | `/s/feed/{client}/combined.xml` / `combined.atom` | public | the aggregator output for any RSS/Atom reader |
@@ -225,9 +228,11 @@ browser's job.
 
 ```
 data/
-├── clients.json            # atp client registry (atp-managed)
-├── secrets/                # AES-256-GCM vault (atp-managed)
-├── logs/                   # per-client usage logs (atp-managed)
+├── atp/
+│   ├── clients.json        # atp client registry (atp-managed)
+│   ├── secrets/            # AES-256-GCM vault (atp-managed)
+│   ├── logs/               # per-client request logs (atp-managed)
+│   └── usage/              # hourly usage rollups (atp-managed)
 ├── pod/{client}/{table}/   # pod filesystem database — records are <id>.xml
 ├── song/{client}/          # siloed static sites
 ├── stenella/

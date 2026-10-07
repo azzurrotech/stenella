@@ -471,6 +471,96 @@ func TestWebWalkthrough(t *testing.T) {
 	}
 }
 
+// A share of one item must render the item's text. The pod row only carries
+// sealed bodies (title_enc/summary_enc/content_enc), so reading the plaintext
+// columns — as the share page used to — renders an empty article for every
+// sealed item. Presenting the token is what authorises opening the envelope.
+func TestSharedItemPageRendersSealedContent(t *testing.T) {
+	s, _ := newTestWeb(t)
+	h := s.Handler()
+
+	fx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(rssBody))
+	}))
+	defer fx.Close()
+
+	admin := adminLogin(t, h)
+	if rec := webReq(t, h, "POST", "/s/api/admin/client", `{"id":"acme","name":"Acme Inc"}`, []*http.Cookie{admin}); rec.Code != http.StatusCreated {
+		t.Fatalf("create client: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := webReq(t, h, "POST", "/s/api/portal/feeds?client=acme",
+		fmt.Sprintf(`{"url":%q,"name":"Fixture","kind":"rss"}`, fx.URL+"/feed"), []*http.Cookie{admin})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add feed: %d %s", rec.Code, rec.Body.String())
+	}
+	var addOut struct {
+		Source struct {
+			ID string `json:"id"`
+		} `json:"source"`
+	}
+	mustDecode(t, rec, &addOut)
+	// handleFetchFeed mirrors synchronously, so the pod rows exist when it returns.
+	rec = webReq(t, h, "POST", "/s/api/portal/feeds/"+addOut.Source.ID+"/fetch?client=acme", "", []*http.Cookie{admin})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch feed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var items struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	mustDecode(t, webReq(t, h, "GET", "/s/api/portal/items?client=acme", "", []*http.Cookie{admin}), &items)
+	if len(items.Items) != 2 {
+		t.Fatalf("items = %+v, want 2", items.Items)
+	}
+	shared := items.Items[0] // newest first: "Second story"
+
+	// The mirrored row is sealed — there is no plaintext body column to read.
+	row, err := s.atp.GetRecord("acme/items", shared.ID)
+	if err != nil {
+		t.Fatalf("read pod row: %v", err)
+	}
+	for _, col := range []string{"title", "summary", "content"} {
+		if row[col] != "" {
+			t.Errorf("pod row has a plaintext %q column: %q", col, row[col])
+		}
+	}
+	if row["title_enc"] == "" {
+		t.Fatal("pod row title_enc is empty; the item was not sealed")
+	}
+
+	var shareOut struct {
+		Share struct {
+			ID string `json:"id"`
+		} `json:"share"`
+		Token string `json:"token"`
+	}
+	rec = webReq(t, h, "POST", "/s/api/portal/shares?client=acme",
+		`{"kind":"item","target":"`+shared.ID+`","title":"Second story shared"}`, []*http.Cookie{admin})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create share: %d %s", rec.Code, rec.Body.String())
+	}
+	mustDecode(t, rec, &shareOut)
+	if shareOut.Share.ID == "" || shareOut.Token == "" {
+		t.Fatalf("share = %+v", shareOut)
+	}
+
+	page := webReq(t, h, "GET", "/s/x/"+shareOut.Share.ID+"?t="+url.QueryEscape(shareOut.Token), "", nil)
+	body := page.Body.String()
+	if page.Code != http.StatusOK {
+		t.Fatalf("share page: %d %s", page.Code, body)
+	}
+	for _, want := range []string{"Second story", "Another item."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("share page does not render %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, row["title_enc"]) || strings.Contains(body, "title_enc") {
+		t.Errorf("share page printed sealed text: %s", body)
+	}
+}
+
 func TestAdminGateRejectsAnonymous(t *testing.T) {
 	s, _ := newTestWeb(t)
 	h := s.Handler()

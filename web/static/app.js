@@ -1138,7 +1138,9 @@
     $$('#tabs button').forEach(function (b) {
       b.addEventListener('click', function () {
         $$('#tabs button').forEach(function (x) { x.classList.toggle('active', x === b); });
-        $$('.pane').forEach(function (p) { p.classList.toggle('active', p.id === 'pane-' + b.getAttribute('data-tab')); });
+        var paneId = 'pane-' + b.getAttribute('data-tab');
+        $$('.pane').forEach(function (p) { p.classList.toggle('active', p.id === paneId); });
+        if (paneId === 'pane-shepherd') loadShepherd();
       });
     });
 

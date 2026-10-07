@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
-	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -416,9 +415,4 @@ func stripHTML(s string) string {
 	)
 	out = repl.Replace(out)
 	return strings.Join(strings.Fields(out), " ")
-}
-
-// ReadAllLimited is a convenience for body limits.
-func ReadAllLimited(r io.Reader, n int64) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r, n))
 }

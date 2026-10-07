@@ -63,10 +63,8 @@ type homeCard struct {
 }
 
 type homeData struct {
-	Title    string
-	Host     string
-	Cards    []homeCard
-	HasFeeds bool
+	Title string
+	Cards []homeCard
 }
 
 // handleHome is the search / link interface. It is deliberately not a direct
@@ -89,15 +87,8 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		cards = append(cards, card)
 	}
 	sort.Slice(cards, func(i, j int) bool { return cards[i].ID < cards[j].ID })
-	hasFeeds := false
-	for _, c := range cards {
-		if c.Items > 0 || c.Sources > 0 {
-			hasFeeds = true
-			break
-		}
-	}
 	s.renderPage(w, r, "home", homeData{
-		Title: "stenella", Host: s.baseURL, Cards: cards, HasFeeds: hasFeeds,
+		Title: "stenella", Cards: cards,
 	})
 }
 

@@ -21,6 +21,7 @@
     <button data-tab="feeds">Feeds</button>
     <button data-tab="secrets">Secrets</button>
     <button data-tab="settings">Settings</button>
+    <button data-tab="shepherd">Shepherd</button>
   </nav>
 
   <section id="panes" class="panes">
@@ -50,6 +51,56 @@
       <div id="secrets-list" class="list"></div>
     </div>
     <div id="pane-settings" class="pane"><div id="settings-view" class="panel"></div></div>
+    <div id="pane-shepherd" class="pane">
+      <section class="panel">
+        <h2>Firewall</h2>
+        <div class="toolbar">
+          <input type="text" id="fw-action" placeholder="action (allow/deny)" style="width:120px">
+          <input type="text" id="fw-path" placeholder="path_glob (e.g. /admin/**)" style="width:200px">
+          <button id="fw-add" class="btn primary">Add rule</button>
+        </div>
+        <div id="fw-rules" class="list"></div>
+      </section>
+      <section class="panel">
+        <h2>Rate limit</h2>
+        <div class="toolbar">
+          <input type="text" id="rl-key" placeholder="key">
+          <button id="rl-status" class="btn">Status</button>
+          <button id="rl-reset" class="btn">Reset all</button>
+        </div>
+        <div id="rl-view" class="muted"></div>
+      </section>
+      <section class="panel">
+        <h2>Upstreams</h2>
+        <div class="toolbar">
+          <input type="text" id="up-name" placeholder="name" style="width:120px">
+          <input type="text" id="up-prefix" placeholder="prefix" style="width:100px">
+          <input type="text" id="up-target" placeholder="target (http://...)" style="width:240px">
+          <button id="up-add" class="btn primary">Add upstream</button>
+        </div>
+        <div id="up-list" class="list"></div>
+      </section>
+      <section class="panel">
+        <h2>Keys (global)</h2>
+        <div class="toolbar">
+          <input type="text" id="gk-subject" placeholder="subject" style="width:100px">
+          <input type="text" id="gk-scopes" placeholder="scopes (comma)" style="width:160px">
+          <input type="text" id="gk-ttl" placeholder="ttl (e.g. 24h)" style="width:80px">
+          <button id="gk-issue" class="btn">Issue key</button>
+          <input type="text" id="gk-next" placeholder="next (for magic)" style="width:120px">
+          <button id="gk-magic" class="btn">Issue magic link</button>
+        </div>
+        <div class="toolbar">
+          <input type="text" id="gk-token" placeholder="token to revoke" style="width:240px">
+          <button id="gk-revoke" class="btn danger">Revoke token</button>
+        </div>
+        <div class="toolbar">
+          <input type="text" id="gk-block" placeholder="block to revoke" style="width:200px">
+          <button id="gk-revoke-block" class="btn danger">Revoke block</button>
+        </div>
+        <div id="gk-view" class="muted"></div>
+      </section>
+    </div>
   </section>
 </main>
 {{template "scripts" .}}

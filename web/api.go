@@ -7,11 +7,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"azzurrotech/stenella/atpclient"
 	"azzurrotech/stenella/feed"
-	"azzurrotech/stenella/links"
 )
 
 // clientParam returns the portal client id from the query string.
@@ -53,8 +51,7 @@ func (s *Server) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 		RetentionDays int    `json:"retention_days"`
 		AclClass      string `json:"acl_class"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	acl := strings.ToLower(strings.TrimSpace(req.AclClass))
@@ -71,7 +68,7 @@ func (s *Server) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 	s.trackBackground(func() {
 		ff, ferr := s.feeds.Fetch(client, src, s.secretResolver())
 		if ferr == nil {
-			s.mirrorToPod(client, ff)
+			s.mirrorToPod(client, ff.Items)
 		}
 	})
 	s.writeJSON(w, http.StatusCreated, map[string]any{"source": src})
@@ -88,8 +85,7 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 		AclClass      string `json:"acl_class"`
 		RetentionDays int    `json:"retention_days"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	patch := map[string]any{}
@@ -123,7 +119,7 @@ func (s *Server) handleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	if src != nil && src.Enabled {
 		s.trackBackground(func() {
 			if ff, err := s.feeds.Fetch(client, src, s.secretResolver()); err == nil {
-				s.mirrorToPod(client, ff)
+				s.mirrorToPod(client, ff.Items)
 			}
 		})
 	}
@@ -153,7 +149,7 @@ func (s *Server) handleFetchFeed(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadGateway, "fetch failed: "+err.Error())
 		return
 	}
-	s.mirrorToPod(client, ff)
+	s.mirrorToPod(client, ff.Items)
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"source": src.Name, "items": len(ff.Items), "status": "ok",
 	})
@@ -162,23 +158,13 @@ func (s *Server) handleFetchFeed(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRefreshAll(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	results := s.feeds.FetchAll(client, s.secretResolver(), true)
-	for _, res := range results {
-		_ = res
-	}
 	// Mirror freshly fetched caches into pod (one pass, newest first already).
+	// This goes through mirrorToPod so the row is sealed: pod must never see a
+	// plaintext title or body, whoever triggers the mirror.
 	if pg := s.feeds.Combined(client, feed.Query{Page: 1, PageSize: 1000}); len(pg.Items) > 0 {
+		items := pg.Items
 		s.trackBackground(func() {
-			for _, it := range pg.Items {
-				cats := strings.Join(it.Categories, "|")
-				_, _ = s.atp.UpsertRecord(links.ItemsTable(client), map[string]string{
-					"id": it.ID, "source_id": it.SourceID, "source_name": it.SourceName,
-					"title": it.Title, "link": it.Link, "guid": it.GUID, "author": it.Author,
-					"summary": it.Summary, "content": it.Content, "categories": cats,
-					"published": it.Published.Format(time.RFC3339),
-					"updated":   it.Updated.Format(time.RFC3339),
-					"fetched":   it.Fetched.Format(time.RFC3339),
-				})
-			}
+			s.mirrorToPod(client, items)
 		})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -193,8 +179,7 @@ func (s *Server) handleImportOPML(w http.ResponseWriter, r *http.Request) {
 		OPMLText string `json:"opml_text"`
 		OPMLURL  string `json:"opml_url"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	var (
@@ -282,8 +267,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		Relation string `json:"relation"`
 		Label    string `json:"label"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	ln, err := s.links.Create(client, req.FromID, req.ToKind, req.ToID, req.ToURL, req.Relation, req.Label)
@@ -306,7 +290,9 @@ func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
 
 // ---- shares ------------------------------------------------------------------
 
-func (s *Server) shareURL(kind, id, token string) (htmlURL, jsonURL string) {
+// shareURL builds the tokenised share links for a share record. Every share is
+// addressed by id plus token regardless of kind, so kind is not a parameter.
+func (s *Server) shareURL(id, token string) (htmlURL, jsonURL string) {
 	q := "?t=" + url.QueryEscape(token)
 	base := s.baseURL
 	return base + "/s/x/" + id + q, base + "/s/api/x/" + id + q
@@ -320,7 +306,7 @@ func (s *Server) handleListShares(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range shares {
-		shares[i].URL, shares[i].JSONURL = s.shareURL(shares[i].Kind, shares[i].ID, shares[i].Token)
+		shares[i].URL, shares[i].JSONURL = s.shareURL(shares[i].ID, shares[i].Token)
 		shares[i].Token = ""
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"client": client, "shares": shares})
@@ -334,8 +320,7 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		Title  string `json:"title"`
 		Days   int    `json:"days"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	sh, err := s.shares.Create(client, req.Kind, req.Target, req.Title, req.Days)
@@ -343,7 +328,7 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sh.URL, sh.JSONURL = s.shareURL(sh.Kind, sh.ID, sh.Token)
+	sh.URL, sh.JSONURL = s.shareURL(sh.ID, sh.Token)
 	tok := sh.Token
 	sh.Token = ""
 	s.writeJSON(w, http.StatusCreated, map[string]any{"share": sh, "token": tok})
@@ -432,8 +417,7 @@ func (s *Server) handleDBInsert(w http.ResponseWriter, r *http.Request) {
 		Table  string            `json:"table"`
 		Fields map[string]string `json:"fields"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	if !validPortalTableName(req.Table) {
@@ -447,8 +431,6 @@ func (s *Server) handleDBInsert(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeJSON(w, http.StatusCreated, map[string]any{"record": rec})
 }
-
-// ---- database (pod through atp) ----------------------------------------------
 
 func (s *Server) handleDBDelete(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
@@ -474,8 +456,7 @@ func (s *Server) handleDBCreateTable(w http.ResponseWriter, r *http.Request) {
 		Table   string   `json:"table"`
 		Columns []string `json:"columns"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	if !validPortalTableName(req.Table) {
@@ -512,8 +493,7 @@ func (s *Server) handleDBBulkInsert(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Records []map[string]string `json:"records"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	if len(req.Records) == 0 {
@@ -567,8 +547,7 @@ func (s *Server) handleSitesFiles(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSitesCreate(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	var op atpclient.SongFileOp
-	if err := s.readBody(r, &op); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &op) {
 		return
 	}
 	if err := s.atp.CreateSongFile(client, op); err != nil {
@@ -581,8 +560,7 @@ func (s *Server) handleSitesCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSitesUpdate(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	var op atpclient.SongFileOp
-	if err := s.readBody(r, &op); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &op) {
 		return
 	}
 	if err := s.atp.UpdateSongFile(client, op); err != nil {
@@ -621,8 +599,7 @@ func (s *Server) handleSetClientSecret(w http.ResponseWriter, r *http.Request) {
 		Value string `json:"value"`
 		Note  string `json:"note"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	if req.Name == "" {
@@ -674,8 +651,7 @@ func (s *Server) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePutPayment(w http.ResponseWriter, r *http.Request) {
 	client := clientParam(r)
 	var payment map[string]string
-	if err := s.readBody(r, &payment); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &payment) {
 		return
 	}
 	stored := map[string]string{}
@@ -741,8 +717,7 @@ func (s *Server) handleIssueKey(w http.ResponseWriter, r *http.Request) {
 		Count    int      `json:"count"`
 		Block    string   `json:"block"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	args := map[string]any{
@@ -782,8 +757,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		Token string `json:"token"`
 		Block string `json:"block"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	if err := s.atp.Revoke(client, map[string]any{"token": req.Token, "block": req.Block}); err != nil {
@@ -791,6 +765,32 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"revoked": true})
+}
+
+func (s *Server) handleIssueMagicLink(w http.ResponseWriter, r *http.Request) {
+	client := clientParam(r)
+	var req struct {
+		Subject  string   `json:"subject"`
+		Scopes   []string `json:"scopes"`
+		Roles    []string `json:"roles"`
+		Audience string   `json:"audience"`
+		TTL      string   `json:"ttl"`
+		Next     string   `json:"next"`
+		Meta     map[string]string
+	}
+	if !s.decodeBody(w, r, &req) {
+		return
+	}
+	args := map[string]any{
+		"subject": req.Subject, "scopes": req.Scopes, "roles": req.Roles,
+		"audience": req.Audience, "ttl": req.TTL, "next": req.Next, "meta": req.Meta,
+	}
+	out, err := s.atp.IssueMagicLink(client, args)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, out)
 }
 
 func (s *Server) fetchURL(raw string) ([]byte, error) {

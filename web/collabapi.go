@@ -53,7 +53,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		AuthorToken string `json:"author_token"`
 		ACLClass    string `json:"acl_class"`
 	}
-	if err := s.readBody(r, &in); err != nil {
+	if err := s.readBody(w, r, &in); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -101,7 +101,7 @@ func (s *Server) handlePinItem(w http.ResponseWriter, r *http.Request) {
 		Item      string `json:"item"`
 		CreatedBy string `json:"created_by"`
 	}
-	if err := s.readBody(r, &in); err != nil {
+	if err := s.readBody(w, r, &in); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -252,11 +252,7 @@ func (s *Server) bumpCommentFlag(client, itemRef string) {
 	if itemRef == "" {
 		return
 	}
-	it := s.feeds.ItemByID(client, itemRef)
-	if it == nil {
-		return
-	}
-	it.CommentCount++
+	s.feeds.BumpCommentCount(client, itemRef)
 }
 
 // collabError maps a store error onto a status code. A missing parent item is a
@@ -292,7 +288,6 @@ type UsageRow struct {
 	SiteFiles    int            `json:"site_files"`
 	DiskBytes    int64          `json:"disk_bytes"`
 	DiskGB       float64        `json:"disk_gb"`
-	CostableDays []string       `json:"costable_days,omitempty"`
 }
 
 // handleAdminUsage builds the platform-wide usage dashboard payload: one row per
@@ -439,7 +434,8 @@ func bytesToGB(n int64) float64 {
 }
 
 // listAllComments is used by the usage dashboard, which needs a count rather
-// than a filtered list.
+// than a filtered list. The row mapping is shared with ListComments
+// (commentFromRow); only the query differs — no item filter, no ordering.
 func (c *collabStore) listAllComments(client string) ([]Comment, error) {
 	recs, _, err := c.atp.QueryTable(client+"/"+commentsTable, atpclient.TableQuery{Limit: 10000})
 	if err != nil {
@@ -447,11 +443,7 @@ func (c *collabStore) listAllComments(client string) ([]Comment, error) {
 	}
 	out := make([]Comment, 0, len(recs))
 	for _, r := range recs {
-		n, _ := strconv.Atoi(r["bytes"])
-		out = append(out, Comment{
-			ID: r["id"], ItemRef: r["item_ref"], AuthorToken: r["author_token"],
-			BodyEnc: r["body_enc"], Bytes: n, Created: r["created"], ACLClass: r["acl_class"],
-		})
+		out = append(out, commentFromRow(r))
 	}
 	return out, nil
 }
@@ -465,6 +457,11 @@ func (c *collabStore) listAllComments(client string) ([]Comment, error) {
 // reflection-based form decoder would be more machinery than the one caller
 // needs.
 func decodeStream(r *http.Request, v any) error {
+	// WHY: signup is unauthenticated, and ParseForm reads the urlencoded body
+	// whole — without a cap a single form post could make the server buffer an
+	// arbitrarily large body. Cap both paths at maxBodyBytes (4 MiB, matching
+	// readBody); the JSON path stays additionally truncated at 1 MiB as before.
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBodyBytes)
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		defer r.Body.Close()
 		return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v)

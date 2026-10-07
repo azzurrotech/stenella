@@ -72,10 +72,9 @@ type Comment struct {
 	BodyEnc     string `json:"body_enc"`
 	// Bytes is the plaintext length, supplied by the browser. It lets the UI
 	// size a placeholder without the server ever decrypting the body.
-	Bytes      int    `json:"bytes,omitempty"`
-	Created    string `json:"created"`
-	ACLClass   string `json:"acl_class,omitempty"`
-	PinnedItem bool   `json:"-"`
+	Bytes    int    `json:"bytes,omitempty"`
+	Created  string `json:"created"`
+	ACLClass string `json:"acl_class,omitempty"`
 }
 
 // AddComment stores an encrypted comment against an item. The item must exist,
@@ -102,6 +101,9 @@ func (c *collabStore) AddComment(client, itemRef, authorToken, bodyEnc string, b
 	if err != nil {
 		return nil, err
 	}
+	// The create response echoes the stored row but not Bytes: the client
+	// just sent that number, so there is nothing to read back here. Listing
+	// goes through commentFromRow, the one reader-side row mapping.
 	return &Comment{
 		ID:          rec["id"],
 		ItemRef:     rec["item_ref"],
@@ -110,6 +112,18 @@ func (c *collabStore) AddComment(client, itemRef, authorToken, bodyEnc string, b
 		Created:     rec["created"],
 		ACLClass:    rec["acl_class"],
 	}, nil
+}
+
+// commentFromRow maps one pod comment row onto the API Comment. It is the
+// single row→Comment mapping: ListComments and the usage dashboard's
+// listAllComments both go through it, so a column rename or a new field lands
+// in every reader at once.
+func commentFromRow(r map[string]string) Comment {
+	n, _ := strconv.Atoi(r["bytes"])
+	return Comment{
+		ID: r["id"], ItemRef: r["item_ref"], AuthorToken: r["author_token"],
+		BodyEnc: r["body_enc"], Bytes: n, Created: r["created"], ACLClass: r["acl_class"],
+	}
 }
 
 // ListComments returns an item's comments, oldest first (a thread reads
@@ -132,11 +146,7 @@ func (c *collabStore) ListComments(client, itemRef string, limit int) ([]Comment
 		if r["item_ref"] != itemRef {
 			continue
 		}
-		n, _ := strconv.Atoi(r["bytes"])
-		out = append(out, Comment{
-			ID: r["id"], ItemRef: r["item_ref"], AuthorToken: r["author_token"],
-			BodyEnc: r["body_enc"], Bytes: n, Created: r["created"], ACLClass: r["acl_class"],
-		})
+		out = append(out, commentFromRow(r))
 	}
 	return out, nil
 }
@@ -149,6 +159,18 @@ func (c *collabStore) DeleteComment(client, id string) error {
 	return c.atp.DeleteRecord(client+"/"+commentsTable, id)
 }
 
+// itemRefSet collects the non-empty item_ref values from rows of a table keyed
+// by item_ref. It is the shape both exemption sets (comments, pins) need.
+func itemRefSet(recs []map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range recs {
+		if ref := strings.TrimSpace(r["item_ref"]); ref != "" {
+			out[ref] = true
+		}
+	}
+	return out
+}
+
 // CommentRefs returns the set of item ids that have at least one comment. The
 // retention sweep uses it as an exemption set.
 func (c *collabStore) CommentRefs(client string) (map[string]bool, error) {
@@ -156,13 +178,7 @@ func (c *collabStore) CommentRefs(client string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]bool{}
-	for _, r := range recs {
-		if ref := strings.TrimSpace(r["item_ref"]); ref != "" {
-			out[ref] = true
-		}
-	}
-	return out, nil
+	return itemRefSet(recs), nil
 }
 
 // ---- pins --------------------------------------------------------------------
@@ -218,13 +234,7 @@ func (c *collabStore) PinnedItems(client string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]bool{}
-	for _, r := range recs {
-		if ref := strings.TrimSpace(r["item_ref"]); ref != "" {
-			out[ref] = true
-		}
-	}
-	return out, nil
+	return itemRefSet(recs), nil
 }
 
 // ListPins returns the client's pins, newest first.

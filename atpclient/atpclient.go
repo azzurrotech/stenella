@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,11 +137,6 @@ func (c *Client) AdminValid(token string, cookies []*http.Cookie) bool {
 	}
 	res, err := c.do("GET", "/api/summary", nil, nil, "", cookies)
 	return err == nil && res.status == http.StatusOK
-}
-
-// AdminCookie is a convenience head for building cookies.
-func AdminCookie(name, value string) *http.Cookie {
-	return &http.Cookie{Name: name, Value: value}
 }
 
 // ---- JSON helpers ------------------------------------------------------------
@@ -326,6 +322,16 @@ type podRecord struct {
 	Fields        map[string]string `json:"fields"`
 }
 
+// row flattens a pod record into the map form every caller consumes: the
+// envelope fields (id/created/updated) travel beside the table's own columns.
+func (r podRecord) row() map[string]string {
+	rec := r.Fields
+	rec["id"] = r.ID
+	rec["created"] = r.Created
+	rec["updated"] = r.Updated
+	return rec
+}
+
 // podList is the JSON shape of a table query.
 type podList struct {
 	Count   int         `json:"count"`
@@ -346,10 +352,10 @@ type TableQuery struct {
 func (c *Client) QueryTable(table string, tq TableQuery) ([]map[string]string, int, error) {
 	q := url.Values{}
 	if tq.Limit > 0 {
-		q.Set("limit", itoa(tq.Limit))
+		q.Set("limit", strconv.Itoa(tq.Limit))
 	}
 	if tq.Offset > 0 {
-		q.Set("offset", itoa(tq.Offset))
+		q.Set("offset", strconv.Itoa(tq.Offset))
 	}
 	if tq.OrderBy != "" {
 		q.Set("orderby", tq.OrderBy)
@@ -367,10 +373,7 @@ func (c *Client) QueryTable(table string, tq TableQuery) ([]map[string]string, i
 	}
 	recs := make([]map[string]string, 0, len(out.Records))
 	for _, r := range out.Records {
-		r.Fields["id"] = r.ID
-		r.Fields["created"] = r.Created
-		r.Fields["updated"] = r.Updated
-		recs = append(recs, r.Fields)
+		recs = append(recs, r.row())
 	}
 	return recs, out.Count, nil
 }
@@ -381,10 +384,7 @@ func (c *Client) GetRecord(table, id string) (map[string]string, error) {
 	if err := c.JSON("GET", "/api/pod/record/"+escapePath(table)+"/"+url.PathEscape(id), nil, nil, &out); err != nil {
 		return nil, err
 	}
-	out.Fields["id"] = out.ID
-	out.Fields["created"] = out.Created
-	out.Fields["updated"] = out.Updated
-	return out.Fields, nil
+	return out.row(), nil
 }
 
 // UpsertRecord inserts or updates a pod record (id inside values, or empty to
@@ -399,11 +399,7 @@ func (c *Client) UpsertRecord(table string, values map[string]string) (map[strin
 	if err := c.JSON("POST", "/api/pod/table/"+escapePath(table), nil, values, &out); err != nil {
 		return nil, err
 	}
-	rec := out.Record.Fields
-	rec["id"] = out.Record.ID
-	rec["created"] = out.Record.Created
-	rec["updated"] = out.Record.Updated
-	return rec, nil
+	return out.Record.row(), nil
 }
 
 // DeleteRecord removes a pod record.
@@ -459,7 +455,7 @@ func (c *Client) Hourly(client string) ([]map[string]any, error) {
 func (c *Client) Usage(client string, limit int) ([]map[string]any, error) {
 	q := url.Values{}
 	if limit > 0 {
-		q.Set("limit", itoa(limit))
+		q.Set("limit", strconv.Itoa(limit))
 	}
 	var out struct {
 		Records []map[string]any `json:"records"`
@@ -494,6 +490,15 @@ func (c *Client) IssueKey(client string, args map[string]any) (map[string]any, e
 	return out, nil
 }
 
+// IssueMagicLink issues a magic link for a client.
+func (c *Client) IssueMagicLink(client string, args map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("POST", "/api/clients/"+url.PathEscape(client)+"/keys/magic", nil, args, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IssueBlock issues a key block for a client (atp passes count through to the
 // embedded shepherd manager).
 func (c *Client) IssueBlock(client string, args map[string]any) (map[string]any, error) {
@@ -507,6 +512,61 @@ func (c *Client) IssueBlock(client string, args map[string]any) (map[string]any,
 // Revoke invalidates a token or whole block for a client.
 func (c *Client) Revoke(client string, args map[string]any) error {
 	return c.JSON("POST", "/api/clients/"+url.PathEscape(client)+"/revoke", nil, args, nil)
+}
+
+// ---- global shepherd methods -------------------------------------------------
+
+// IssueKeyGlobal issues a global (unscoped) capability token.
+func (c *Client) IssueKeyGlobal(args map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("POST", "/api/shepherd/keys", nil, args, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// IssueBlockGlobal issues a global key block.
+func (c *Client) IssueBlockGlobal(args map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("POST", "/api/shepherd/keys/block", nil, args, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// IssueMagicLinkGlobal issues a global magic link.
+func (c *Client) IssueMagicLinkGlobal(args map[string]any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("POST", "/api/shepherd/keys/magic", nil, args, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RevokeTokenGlobal revokes a token globally.
+func (c *Client) RevokeTokenGlobal(token string) error {
+	return c.JSON("POST", "/api/shepherd/revoke", nil, map[string]any{"token": token}, nil)
+}
+
+// RevokeBlockGlobal revokes a block globally.
+func (c *Client) RevokeBlockGlobal(block string) error {
+	return c.JSON("POST", "/api/shepherd/revoke/block", nil, map[string]any{"block": block}, nil)
+}
+
+// JSKeyGlobal returns the global JS crypto key.
+func (c *Client) JSKeyGlobal(scope, usage string) (map[string]any, error) {
+	var out map[string]any
+	q := url.Values{}
+	if scope != "" {
+		q.Set("scope", scope)
+	}
+	if usage != "" {
+		q.Set("usage", usage)
+	}
+	if err := c.JSON("GET", "/api/shepherd/keys/javascript", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // VerifyToken checks a capability token against a client's scope.
@@ -567,26 +627,65 @@ func (c *Client) JSKey(client string) (map[string]any, error) {
 	return out, nil
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+// FirewallRules returns global firewall rules.
+func (c *Client) FirewallRules() (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("GET", "/api/shepherd/firewall/rules", nil, nil, &out); err != nil {
+		return nil, err
 	}
-	neg := n < 0
-	if neg {
-		n = -n
+	return out, nil
+}
+
+// AddFirewallRule adds a global firewall rule.
+func (c *Client) AddFirewallRule(rule any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("POST", "/api/shepherd/firewall/rules", nil, rule, &out); err != nil {
+		return nil, err
 	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
+	return out, nil
+}
+
+// DeleteFirewallRule deletes a global firewall rule.
+func (c *Client) DeleteFirewallRule(id string) error {
+	return c.JSON("DELETE", "/api/shepherd/firewall/rules/"+url.PathEscape(id), nil, nil, nil)
+}
+
+// RateLimitStatus returns rate limit status for a key.
+func (c *Client) RateLimitStatus(key string) (map[string]any, error) {
+	var out map[string]any
+	q := url.Values{"key": {key}}
+	if err := c.JSON("GET", "/api/shepherd/ratelimit/status", q, nil, &out); err != nil {
+		return nil, err
 	}
-	if neg {
-		i--
-		b[i] = '-'
+	return out, nil
+}
+
+// RateLimitReset resets rate limits globally.
+func (c *Client) RateLimitReset() error {
+	return c.JSON("POST", "/api/shepherd/ratelimit/reset", nil, nil, nil)
+}
+
+// ListUpstreams lists gateway upstreams.
+func (c *Client) ListUpstreams() (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("GET", "/api/shepherd/upstreams", nil, nil, &out); err != nil {
+		return nil, err
 	}
-	return string(b[i:])
+	return out, nil
+}
+
+// AddUpstream adds a gateway upstream.
+func (c *Client) AddUpstream(upstream any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.JSON("POST", "/api/shepherd/upstreams", nil, upstream, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DeleteUpstream deletes a gateway upstream by prefix.
+func (c *Client) DeleteUpstream(prefix string) error {
+	return c.JSON("DELETE", "/api/shepherd/upstreams/"+url.PathEscape(prefix), nil, nil, nil)
 }
 
 // escapePath escapes each segment of a slash-separated path so that pod table

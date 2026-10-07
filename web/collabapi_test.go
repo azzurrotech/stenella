@@ -67,7 +67,7 @@ func seedClientItemRetention(t *testing.T, s *Server, client, title string, publ
 	// pod row that has not landed yet is invisible to the links store, which
 	// validates both endpoints against pod because its junction symlinks the
 	// record's XML file.
-	s.mirrorToPod(client, fetched)
+	s.mirrorToPod(client, fetched.Items)
 	return fetched.Items[0].ID
 }
 
@@ -300,6 +300,46 @@ func TestCommentValidation(t *testing.T) {
 		`{"body_enc":"a.b.c","bytes":3}`, c)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("comment with no item = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The comment counter is written onto the cached item when a comment lands, so
+// it has to survive being read back. ItemByID hands out a copy of the stored
+// item, so a counter incremented on that copy would leave the portal reporting
+// zero comments on a commented-on item — which is what it did before.
+func TestCommentCountSurvivesItemRead(t *testing.T) {
+	s, _ := newTestWeb(t)
+	item := seedClientItem(t, s, "acme", "Counted", time.Now().UTC().Add(-time.Hour))
+	c := signedIn(t, s, "acme")
+
+	rec := doJSON(t, s, http.MethodPost, "/s/api/portal/items/comments?client=acme",
+		`{"item":"`+item+`","body_enc":"a.b.c","bytes":3,"author_token":"ada"}`, c)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create comment = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if it := s.feeds.ItemByID("acme", item); it == nil {
+		t.Fatal("ItemByID returned nil for a seeded item")
+	} else if it.CommentCount != 1 {
+		t.Errorf("ItemByID().CommentCount = %d, want 1", it.CommentCount)
+	}
+
+	rec = doJSON(t, s, http.MethodGet, "/s/api/portal/items?client=acme", "", c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list items = %d: %s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Items []struct {
+			ID           string `json:"id"`
+			CommentCount int    `json:"comment_count"`
+		} `json:"items"`
+	}
+	decodeInto(t, rec, &listed)
+	if len(listed.Items) != 1 || listed.Items[0].ID != item {
+		t.Fatalf("items = %+v, want the seeded item", listed.Items)
+	}
+	if listed.Items[0].CommentCount != 1 {
+		t.Errorf("comment_count = %d, want 1", listed.Items[0].CommentCount)
 	}
 }
 

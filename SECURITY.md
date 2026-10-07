@@ -62,7 +62,10 @@ concurrent sweeps would prune ids the other had just re-evaluated.
 
 - **Sessions.** Admin sessions are atp's stdlib HMAC token cookies with an
   expiry; portal sessions are stenella's own in-memory store with a TTL. No
-  third-party session library.
+  third-party session library. Per-IP rate limits for signup and portal login
+  default to using `r.RemoteAddr`; `X-Forwarded-For` is honoured only when the
+  operator sets `--trust-proxy` / `$STENELLA_TRUST_PROXY=1` (off by default),
+  because the header is client-controlled on a direct internet deployment.
 - **Passwords / secrets.** atp keeps a secrets vault encrypted with
   AES-256-GCM under a ≥ 32-byte master secret (`--secret` / `$STENELLA_SECRET`);
   vault files are never written in plaintext. Portal login compares the
@@ -71,7 +74,13 @@ concurrent sweeps would prune ids the other had just re-evaluated.
   response-size limits (16 MiB per fetch; a scraped page is additionally cut to
   4 MiB before parsing, so inline trackers and base64 images are dropped rather
   than stored). Per-source `auth_secret` values are resolved from the vault and
-  sent only as `Authorization: Bearer` on the matching source.
+  sent only as `Authorization: Bearer` on the matching source. A small SSRF
+  guard blocks loopback, RFC1918, link-local (including `169.254.169.254`) and
+  multicast destinations in every server-side fetch; only `--allow-private-fetch`
+  / `$STENELLA_ALLOW_PRIVATE_FETCH=1` lifts it, and it must be lifted only for
+  loopback-only dev/test setups. The guard is applied via the `http.Transport`
+  `DialContext`, so every hop of a redirect chain is checked, and resolved IPs
+  are used for the actual dial to prevent re-binding attacks.
   HTML in `<description>`/`<content>` is retained on the server but the web UI
   renders summaries as text (templates use `html/template` escaping — stored
   values are never injected raw).
@@ -92,16 +101,40 @@ concurrent sweeps would prune ids the other had just re-evaluated.
 - **Signup.** `POST /s/api/signup` is the only unauthenticated mutating endpoint
   on the platform. It is rate limited and answers only once per client id; the
   portal secret it returns is shown exactly once and not recoverable afterwards.
-- **Shared HTML.** Untrusted share content is escaped before it reaches a page
-  (`TestSanitizeHTMLEscapesUntrustedShareContent` guards this), and stored values
-  are never injected raw — templates use `html/template`.
-- **Static JS.** The four Emperor42 libraries are ordinary browser JavaScript.
-  vici uses the WebCrypto API (PBKDF2-SHA256, 256-bit AES-GCM) when an
-  application explicitly supplies a passphrase. The azzurro checkout draft is
-  intentionally browser-local and is not a place for secrets or payment data.
 - **Public site data.** `/s/data/{client}/{table}` is read-only and limited to
-  one enabled client namespace. Traversal, management tables, and share tokens
-  fail closed; host-mapped sites cannot address another client's silo.
+  one enabled client namespace. Traversal, management tables, collaboration
+  tables (comments, pins), the feed mirror (`items`), and share tokens all fail
+  closed; host-mapped sites cannot address another client's silo. The public
+  bridge is intended for client-authored tables only (products, posts, …), not
+  for platform management or collaboration data.
+
+## Security hardening (this pass)
+
+- **Committed secret material.** Runtime secret artifacts (`.env`, `data/clients.json`,
+  `start_server.sh` credentials) were removed from tracking and deleted from the
+  working tree in this pass. **If those values were ever real, they must be ROTATED
+  immediately** — git history still contains them. A `data/` ignore rule prevents
+  re-adding runtime data.
+- **SSRF guard.** The `netguard` package blocks server-side fetches to loopback,
+  RFC1918, link-local (including the cloud metadata endpoint `169.254.169.254`),
+  unspecified, and multicast addresses by default. The only escape hatch is
+  `--allow-private-fetch` / `STENELLA_ALLOW_PRIVATE_FETCH=1` for loopback-only
+  dev/test setups. The guard is enforced via the transport's `DialContext` so
+  every redirect hop is checked, and resolved IPs are dialled directly to prevent
+  DNS re-binding.
+- **Rate limiting & IP trust.** Portal login is throttled (5/min per IP); signup
+  and login share the fixed-window limiter. The client IP defaults to
+  `r.RemoteAddr`; `X-Forwarded-For` is honoured only when
+  `--trust-proxy` / `STENELLA_TRUST_PROXY=1` is set (off by default), because the
+  header is client-controlled on a direct internet deployment.
+- **Request body caps.** All stenella JSON request bodies are capped at 4 MiB via
+  `http.MaxBytesReader`. Signup's `decodeStream` is similarly capped so both JSON
+  and form posts cannot be used to force unbounded body reads. Oversized bodies
+  return the endpoint's standard `{"error":"invalid body"}` response.
+- **Client-enumeration mitigation.** Login failure messages and status are
+  identical whether the client is unknown/disabled or the secret is wrong. The
+  specific reason is logged server-side only (timing is normalised via a
+  constant-time comparison).
 
 ## Honest non-claims
 

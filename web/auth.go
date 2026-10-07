@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -20,6 +21,15 @@ const sessionCookie = "stenella_session"
 // sessionTTL is how long a client portal login lasts without refresh.
 const sessionTTL = 24 * time.Hour
 
+const (
+	// loginWindow and loginBurst bound portal login attempts per source per
+	// minute. Login is unauthenticated and answers "right/wrong", so without a
+	// limit it is an online password-guessing oracle. The budget matches
+	// signup's; the counter is the shared rateLimiter (ratelimit.go).
+	loginWindow = time.Minute
+	loginBurst  = 5
+)
+
 var (
 	errUnauthorized = errors.New("unauthorized")
 	errForbidden    = errors.New("forbidden")
@@ -29,7 +39,6 @@ var (
 type session struct {
 	Client  string
 	label   string
-	created time.Time
 	expires time.Time
 }
 
@@ -47,7 +56,7 @@ func newSessionStore() *sessionStore {
 
 func (ss *sessionStore) put(label, client string) (token string, sess *session) {
 	token = randomHex(24)
-	sess = &session{Client: client, label: label, created: time.Now(), expires: time.Now().Add(sessionTTL)}
+	sess = &session{Client: client, label: label, expires: time.Now().Add(sessionTTL)}
 	ss.mu.Lock()
 	ss.m[token] = sess
 	ss.mu.Unlock()
@@ -74,6 +83,15 @@ func (ss *sessionStore) del(token string) {
 	ss.mu.Unlock()
 }
 
+// randomHex is the package's single random-token generator: n bytes of
+// cryptographic randomness in, 2n lowercase hex characters out (the session
+// token at 24 bytes, the signup portal secret at signupSecretBytes = 24).
+//
+// It panics rather than returning an error. A fallback secret generated from
+// anything weaker than the OS RNG would be worse than a dead request, and on
+// the toolchains this module builds with crypto/rand.Read does not report
+// errors at all — it aborts internally — so an error branch here would be dead
+// code that only invites callers to ignore it.
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -183,12 +201,19 @@ func requestIsHTTPS(r *http.Request) bool {
 // (or "password") secret in atp's vault. Super admins rotate that secret to
 // change a client's login.
 func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
+	// Throttle before doing any work: an unauthenticated verifier with no rate
+	// limit is a guessing oracle. Keyed by the real client IP unless the
+	// operator opted into --trust-proxy (see ratelimit.go).
+	if !s.login.allow(s.remoteIP(r), time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		s.writeErr(w, http.StatusTooManyRequests, "too many login attempts; try again in a minute")
+		return
+	}
 	var req struct {
 		Client string `json:"client"`
 		Secret string `json:"secret"`
 	}
-	if err := s.readBody(r, &req); err != nil {
-		s.writeErr(w, http.StatusBadRequest, "invalid body")
+	if !s.decodeBody(w, r, &req) {
 		return
 	}
 	req.Client = strings.TrimSpace(req.Client)
@@ -200,21 +225,34 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "invalid client")
 		return
 	}
-	if !s.clientExists(req.Client) {
-		s.writeErr(w, http.StatusUnauthorized, "unknown or disabled client")
-		return
-	}
+	exists := s.clientExists(req.Client)
 	got := ""
-	for _, name := range []string{"portal", "password"} {
-		if v, err := s.atp.GetSecret(req.Client, name); err == nil {
-			got = v
-			break
+	if exists {
+		for _, name := range []string{"portal", "password"} {
+			if v, err := s.atp.GetSecret(req.Client, name); err == nil {
+				got = v
+				break
+			}
 		}
 	}
-	if got == "" || !secretEqual(got, req.Secret) {
-		// Equal work regardless of success so timing does not leak presence.
-		secretEqual(got, req.Secret)
-		s.writeErr(w, http.StatusUnauthorized, "invalid secret")
+	// Exactly one constant-time comparison on every path: an unknown client
+	// compares against "" the same way a wrong secret compares against the
+	// stored value, so both cases cost the same.
+	match := secretEqual(got, req.Secret)
+	if !exists {
+		match = false
+	}
+	if !match {
+		if !exists {
+			// The specific reason stays in the server log only. The response is
+			// identical to a wrong secret on purpose: a different message would
+			// turn this unauthenticated endpoint into a client-enumeration
+			// oracle.
+			log.Printf("web: portal login for unknown or disabled client %q", req.Client)
+		} else {
+			log.Printf("web: portal login failed for client %q: bad secret", req.Client)
+		}
+		s.writeErr(w, http.StatusUnauthorized, "invalid client or secret")
 		return
 	}
 	token, sess := s.sess.put("client "+req.Client, req.Client)

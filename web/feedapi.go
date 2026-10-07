@@ -71,7 +71,7 @@ func (s *Server) combinedFeed(client string, q feed.Query) feed.Page {
 	}
 
 	sort.SliceStable(all, func(i, j int) bool {
-		a, b := feedItemTime(all[i]), feedItemTime(all[j])
+		a, b := feed.ItemTime(all[i]), feed.ItemTime(all[j])
 		if !a.Equal(b) {
 			return a.After(b)
 		}
@@ -101,16 +101,6 @@ func (s *Server) combinedFeed(client string, q feed.Query) feed.Page {
 		Page:    page,
 		HasMore: end < total,
 	}
-}
-
-func feedItemTime(item feed.Item) time.Time {
-	if !item.Published.IsZero() {
-		return item.Published
-	}
-	if !item.Updated.IsZero() {
-		return item.Updated
-	}
-	return item.Fetched
 }
 
 // postFeedItems converts a client's posts table into normalized feed items.
@@ -216,6 +206,12 @@ func postCategories(rec map[string]string) []string {
 	return out
 }
 
+// parsePostTime reads the date formats a client's post records actually carry.
+// It overlaps feed.parseAnyTime (the XML feed parser's layout list) but is not
+// it: posts are plain site records, so the RFC822 family and the
+// single-digit-day retry are absent, while "2006-01-02" alone is common. The
+// two stay separate because widening this list would change which posts count
+// as dated (an unparsed date falls back to "now" above, which orders the feed).
 func parsePostTime(value string) time.Time {
 	if value == "" {
 		return time.Time{}
@@ -237,13 +233,22 @@ func parsePostTime(value string) time.Time {
 	return time.Time{}
 }
 
-// postMatches filters a client-authored post against a query.
+// postMatches filters a client-authored post against a query: the ACL class,
+// category and since gates first, then the text query.
 //
-// Like itemMatches in the feed engine, it searches envelope metadata only. A
-// post body is sealed before it reaches the pod table, so a server-side query
-// cannot see it; the browser decrypts and filters the text itself. The one
-// deliberate exception is the post's own id and link, which are the metadata a
-// client pastes when linking to something.
+// The text part is feed.ItemMatches, the engine's envelope matcher, so a post
+// and a configured-source item are searched with identical semantics: a
+// case-insensitive substring over the clear metadata (id, link, guid, author,
+// source and categories). A post body is sealed before it reaches the pod
+// table, so a server-side query cannot see it; the browser decrypts and filters
+// the text itself.
+//
+// The category gate here is deliberately case-insensitive (EqualFold over
+// trimmed values) while the engine's own Category gate in Combined compares
+// exactly (containsStr): post categories arrive from free-form site records in
+// mixed case, feed categories come from the publisher's own spelling. The two
+// filters are left apart because changing either would silently change which
+// records a ?category= query returns.
 func postMatches(item feed.Item, q feed.Query) bool {
 	if q.AclClass != "" && !feed.AllowedACL(item, feed.NormalizeACLClass(q.AclClass)) {
 		return false
@@ -251,17 +256,10 @@ func postMatches(item feed.Item, q feed.Query) bool {
 	if q.Category != "" && !containsPostCategory(item.Categories, q.Category) {
 		return false
 	}
-	if !q.Since.IsZero() && feedItemTime(item).Before(q.Since) {
+	if !q.Since.IsZero() && feed.ItemTime(item).Before(q.Since) {
 		return false
 	}
-	if q.Q == "" {
-		return true
-	}
-	haystack := strings.ToLower(strings.Join([]string{
-		item.ID, item.Link, item.GUID, item.Author,
-		item.SourceName, strings.Join(item.Categories, " "),
-	}, "\n"))
-	return strings.Contains(haystack, strings.ToLower(q.Q))
+	return feed.ItemMatches(item, q.Q)
 }
 
 func containsPostCategory(categories []string, want string) bool {
@@ -493,6 +491,35 @@ func (s *Server) handleClientFeedPage(w http.ResponseWriter, r *http.Request) {
 
 // ---- share page + JSON ----------------------------------------------------------
 
+// openItemField reads one body field of a pod items row for rendering. Pod keeps
+// bodies sealed in <field>_enc, so a share page opened with a valid token opens
+// them here with the client's key; rows written before sealing still carry the
+// plaintext column and are read as-is. An envelope that will not open yields ""
+// rather than the sealed blob, so a page can never print ciphertext.
+func (s *Server) openItemField(client string, rec map[string]string, field string) string {
+	if enc := rec[field+"_enc"]; enc != "" {
+		plain, ok := s.keys.OpenOK(client, enc)
+		if !ok {
+			return ""
+		}
+		return plain
+	}
+	return rec[field]
+}
+
+// readableItemRow is openItemField across every field the share template renders:
+// the three sealed bodies plus the metadata columns pod stores in the clear.
+func (s *Server) readableItemRow(client string, rec map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, f := range []string{"id", "link", "author", "published", "source_name"} {
+		out[f] = rec[f]
+	}
+	for _, f := range []string{"title", "summary", "content"} {
+		out[f] = s.openItemField(client, rec, f)
+	}
+	return out
+}
+
 func (s *Server) resolveShare(id string) (*links.Share, string, error) {
 	client, ok := s.shares.ClientFor(id)
 	if !ok || !s.clientExists(client) {
@@ -572,12 +599,15 @@ func (s *Server) handleSharePage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
+		// The pod row is sealed, so open it before handing it to the template:
+		// the reader proved the token, which is what authorises the plaintext.
+		readable := s.readableItemRow(client, rec)
 		item := struct {
 			Title, Link, Summary, Content, Author, Published, Source string
 		}{
-			Title: rec["title"], Link: rec["link"], Summary: rec["summary"],
-			Content: rec["content"], Author: rec["author"], Published: rec["published"],
-			Source: rec["source_name"],
+			Title: readable["title"], Link: readable["link"], Summary: readable["summary"],
+			Content: readable["content"], Author: readable["author"], Published: readable["published"],
+			Source: readable["source_name"],
 		}
 		s.renderPage(w, r, "share", map[string]any{
 			"Title": "Shared item", "Kind": "item", "Client": client,
@@ -589,12 +619,14 @@ func (s *Server) handleSharePage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		from, _ := s.atp.GetRecord(links.ItemsTable(client), ln.FromID)
+		fromRec, _ := s.atp.GetRecord(links.ItemsTable(client), ln.FromID)
+		from := s.readableItemRow(client, fromRec)
 		to := map[string]string{}
 		if ln.ToKind == links.ToURL {
 			to["title"], to["link"] = ln.ToURL, ln.ToURL
 		} else {
-			to, _ = s.atp.GetRecord(links.ItemsTable(client), ln.ToID)
+			toRec, _ := s.atp.GetRecord(links.ItemsTable(client), ln.ToID)
+			to = s.readableItemRow(client, toRec)
 		}
 		s.renderPage(w, r, "share", map[string]any{
 			"Title": "Shared link", "Kind": "link", "Client": client,

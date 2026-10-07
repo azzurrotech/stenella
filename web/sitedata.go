@@ -21,8 +21,9 @@ import (
 // front-end (vidi mainly) can render them.
 //
 // Only tables inside the client's own namespace are readable, and the platform
-// management tables (shares/links) stay private — a client controls what it
-// publishes by what it stores in a given table.
+// management tables (shares/links) plus the collaboration/mirror tables
+// (comments, pins, items) stay private — a client controls what it publishes
+// by what it stores in a given table.
 
 // clientExists reports whether id is a registered, enabled atp client. Public
 // site data is intentionally unavailable for disabled tenants; an operator can
@@ -109,6 +110,17 @@ func invalidSiteDataPath(r *http.Request) bool {
 	return !validPublicTablePath(parts[1])
 }
 
+// privateSiteTable reports whether a table name is refused by the public
+// site-data endpoint, at any nesting depth.
+func privateSiteTable(table string) bool {
+	for _, name := range []string{"shares", "links", "comments", "pins", "items"} {
+		if table == name || strings.HasPrefix(table, name+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // handleSiteData serves a client's pod table as public JSON. Response shape:
 //
 //	{"client": "azzurrotech", "table": "products", "count": 5, "records": […]}
@@ -131,9 +143,18 @@ func (s *Server) handleSiteData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The management tables of the platform stay private even on the public
-	// endpoint (share records contain tokens).
-	if table == "shares" || table == "links" || strings.HasPrefix(table, "shares/") || strings.HasPrefix(table, "links/") {
+	// Tables that never appear on the public endpoint, even though the route
+	// accepts any table name inside the client's namespace:
+	//   - shares, links: platform management records (share tokens, link graph).
+	//   - comments, pins: collaboration data — ciphertext bodies plus author
+	//     tokens and pin state, none of which a public page has any business
+	//     reading. No page in this repository fetches them from /s/data.
+	//   - items: the ACL-stamped feed mirror. It holds private/protected rows;
+	//     public content is served by /s/feed/..., which pins acl_class=public
+	//     server-side. No public page in this repository reads it via /s/data.
+	// Client-authored tables (products, posts, …) stay readable: publishing a
+	// table to the hosted site is exactly what this endpoint is for.
+	if privateSiteTable(table) {
 		s.writeErr(w, http.StatusForbidden, "this table is not public")
 		return
 	}
