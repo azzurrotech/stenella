@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f1420;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1d2740;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4f8cff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3ecf8e;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="512" height="512" rx="80" fill="url(#bgGradient)"/>
+  
+  <!-- Outer ring -->
+  <circle cx="256" cy="256" r="220" fill="none" stroke="url(#accentGradient)" stroke-width="8" stroke-linecap="round" stroke-dasharray="1382" stroke-dashoffset="0">
+    <animate attributeName="stroke-dashoffset" from="1382" to="0" dur="2s" repeatCount="indefinite" />
+  </circle>
+  
+  <!-- Central hexagon (data platform) -->
+  <g transform="translate(256, 256)">
+    <!-- Hexagon background -->
+    <polygon points="0,-100 86.6,-50 86.6,50 0,100 -86.6,50 -86.6,-50" 
+             fill="#171e2e" stroke="url(#accentGradient)" stroke-width="3"/>
+    
+    <!-- Inner connection lines -->
+    <g stroke="#4f8cff" stroke-width="2" opacity="0.8">
+      <line x1="0" y1="-100" x2="0" y2="100"/>
+      <line x1="-86.6" y1="-50" x2="86.6" y2="50"/>
+      <line x1="-86.6" y1="50" x2="86.6" y2="-50"/>
+    </g>
+    
+    <!-- Center circle -->
+    <circle cx="0" cy="0" r="24" fill="url(#accentGradient)"/>
+    
+    <!-- Four data nodes at corners -->
+    <circle cx="-86.6" cy="-50" r="8" fill="#3ecf8e" opacity="0.9"/>
+    <circle cx="86.6" cy="-50" r="8" fill="#ffb454" opacity="0.9"/>
+    <circle cx="-86.6" cy="50" r="8" fill="#4f8cff" opacity="0.9"/>
+    <circle cx="86.6" cy="50" r="8" fill="#ff6b6b" opacity="0.9"/>
+    
+    <!-- Pulse animation on center -->
+    <circle cx="0" cy="0" r="24" fill="none" stroke="url(#accentGradient)" stroke-width="2" opacity="0.5">
+      <animate attributeName="r" from="24" to="40" dur="1.5s" repeatCount="indefinite" />
+      <animate attributeName="opacity" from="0.5" to="0" dur="1.5s" repeatCount="indefinite" />
+    </circle>
+  </g>
+  
+  <!-- "AT" initials at bottom -->
+  <text x="256" y="400" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" 
+        font-size="48" font-weight="700" fill="url(#accentGradient)" letter-spacing="4">
+    AZ
+  </text>
+</svg>

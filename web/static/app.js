@@ -135,7 +135,15 @@
         data[f.name] = (f.kind === 'checkbox') ? input.checked : input.value;
       });
       try {
-        onSubmit(data, handle);
+        var result = onSubmit(data, handle);
+        // Auto-close on successful promise resolution
+        if (result && typeof result.then === 'function') {
+          result.then(function () {
+            close();
+          }).catch(function (e) {
+            // Don't close on error, let user see the alert
+          });
+        }
       } catch (e) {
         alert(e.message);
       }
@@ -656,24 +664,52 @@
                   .then(function (r) {
                     loadFeeds();
                     loadItems(1);
-                    alert('Fetched ' + r.items + ' item(s) from ' + r.source);
-                  }).catch(function (e) { alert(e.message); });
+                    flash('Fetched ' + r.items + ' item(s) from ' + r.source, true);
+                  }).catch(function (e) { flash(e.message, false); });
               }, 'small'),
               btn(src.enabled ? 'Pause' : 'Enable', function () {
                 put('/s/api/portal/feeds/' + encodeURIComponent(src.id) + '?client=' + qs, { enabled: !src.enabled })
-                  .then(loadFeeds).catch(function (e) { alert(e.message); });
+                  .then(loadFeeds).catch(function (e) { flash(e.message, false); });
               }, 'small'),
               btn('Delete', function () {
                 confirmDialog('Delete source ' + src.name + '?', function () {
                   del('/s/api/portal/feeds/' + encodeURIComponent(src.id) + '?client=' + qs)
-                    .then(loadFeeds).catch(function (e) { alert(e.message); });
+                    .then(loadFeeds).catch(function (e) { flash(e.message, false); });
                 });
               }, 'small danger')
             ])
           ]));
         });
       }).catch(function (e) { box.innerHTML = ''; box.appendChild(errEl(e.message)); });
+    }).catch(function (e) { box.innerHTML = ''; box.appendChild(errEl(e.message)); });
     }
+
+    // public feed ---------------------------------------------------------------
+    var publicFeedPage = 1;
+    function loadPublicFeed(reset) {
+      if (reset) publicFeedPage = 1;
+      var box = $('#public-feed-list'), moreWrap = $('#public-feed-more');
+      var client = document.body.dataset.client || '';
+      if (!client) return;
+      get('/s/feed/' + encodeURIComponent(client) + '/items?page=' + publicFeedPage).then(function (data) {
+        if (reset) box.innerHTML = '';
+        (data.items || []).forEach(function (it) {
+          box.appendChild(el('article', { class: 'feed-item', 'data-id': it.id }, [
+            el('h2', {}, [el('a', { href: it.link, target: '_blank', rel: 'noopener', text: it.title })]),
+            muted(esc(it.source_name || '') + ' · ' + esc(it.published || '')),
+            el('p', { class: 'summary' }, [esc(it.summary || '')])
+          ]));
+        });
+        moreWrap.classList.toggle('hidden', !data.has_more);
+        publicFeedPage += 1;
+      }).catch(function (e) { box.appendChild(errEl(e.message)); });
+    }
+    $('#public-feed-next').addEventListener('click', function () { loadPublicFeed(false); });
+
+    // Load public feed when tab is clicked
+    $$('#tabs button[data-tab="public"]').forEach(function (b) {
+      b.addEventListener('click', function () { loadPublicFeed(true); });
+    });
 
     $('#add-feed-btn').addEventListener('click', function () {
       modal('Add feed source', [
@@ -732,8 +768,8 @@
       post('/s/api/portal/refresh?client=' + qs).then(function () {
         $('#items-list').innerHTML = '';
         loadItems(true);
-        alert('Refreshed all sources.');
-      }).catch(function (e) { alert(e.message); });
+        flash('Refreshed all sources.', true);
+      }).catch(function (e) { flash(e.message, false); });
     });
 
     // links ------------------------------------------------------------------
@@ -897,7 +933,7 @@
     if (dbBulkBtn) dbBulkBtn.addEventListener('click', bulkImport);
 
     function loadTables() {
-      get('/s/api/portal/db/tables?client=' + qs).then(function (data) {
+      return get('/s/api/portal/db/tables?client=' + qs).then(function (data) {
         dbTables.innerHTML = '';
         (data.tables || []).forEach(function (t) {
           dbTables.appendChild(el('option', { value: t.name }, t.name + ' (' + t.count + ')'));
