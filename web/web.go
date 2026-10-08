@@ -181,6 +181,7 @@ func New(cfg Config) (*Server, error) {
 		Secret:        cfg.AtpSecret,
 		AdminUser:     cfg.AdminUser,
 		AdminPassword: cfg.AdminPassword,
+		PublicBase:    cfg.PublicBase,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("atp: %w", err)
