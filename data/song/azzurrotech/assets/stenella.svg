@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="stenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6633cc"/>
+      <stop offset="100%" style="stop-color:#440099"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" fill="url(#stenGrad)"/>
+  <g transform="translate(200, 180)">
+    <polygon points="0,-70 60,-35 60,35 0,70 -60,35 -60,-35" fill="rgba(255,255,255,0.15)" stroke="white" stroke-width="3"/>
+    <polygon points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" fill="rgba(255,255,255,0.25)"/>
+    <polygon points="0,-30 30,-15 30,15 0,30 -30,15 -30,-15" fill="rgba(255,255,255,0.4)"/>
+    <circle cx="0" cy="0" r="12" fill="white" opacity="0.9"/>
+  </g>
+  <text x="200" y="330" font-family="system-ui, sans-serif" font-size="24" font-weight="bold" fill="white" text-anchor="middle">STENELLA</text>
+  <text x="200" y="360" font-family="system-ui, sans-serif" font-size="14" fill="rgba(255,255,255,0.8)" text-anchor="middle">Data Platform</text>
+</svg>

@@ -25,4 +25,7 @@ go.work
 .env
 stenella-azzurro
 *.backup
-data/
+data/atp/
+data/pod/
+data/stenella/
+# data/song/ is tracked (static site content)
