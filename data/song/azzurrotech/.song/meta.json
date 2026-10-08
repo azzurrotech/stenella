@@ -1,15 +1,23 @@
 {
   "version": 1,
   "index_rules": [
-    {"header": "X-Index-Variant", "value": "mobile", "file": "index.mobile.html"},
-    {"header": "X-Index-Variant", "value": "desktop", "file": "index.html"}
+    {
+      "header": "X-Index-Variant",
+      "value": "mobile",
+      "file": "index.mobile.html"
+    },
+    {
+      "header": "X-Index-Variant",
+      "value": "desktop",
+      "file": "index.html"
+    }
   ],
   "template_routes": {
-    "page": "page",
     "about": "about",
+    "contact": "contact",
+    "page": "page",
     "services": "services",
-    "solutions": "solutions",
-    "contact": "contact"
+    "solutions": "solutions"
   },
-  "encrypted": {}
+  "base_url": "http://localhost:8080/c/azzurrotech/"
 }

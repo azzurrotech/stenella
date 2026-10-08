@@ -20,10 +20,11 @@
         <a href="{{.SiloURL}}">Site</a>
         <a href="/s/portal?client={{.ID}}">Portal</a>
         <a href="{{.FeedURL}}">Feed · {{.Items}}</a>
+        <a href="/login">Login</a>
       </div>
     </article>
     {{else}}
-    <p class="muted">No clients yet. Sign into the <a href="/s/admin">super admin</a> to create one.</p>
+    <p class="muted">No clients yet. Sign into the <a href="/s/admin">super admin</a> to create one or <a href="/login">login</a>.</p>
     {{end}}
   </section>
 </main>
