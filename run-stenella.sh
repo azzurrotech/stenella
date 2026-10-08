@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-# Configuration
+# Configuration (all overridable via env vars)
 PORT="${PORT:-8084}"
 ROOT="${ROOT:-./data}"
 SECRET="${SECRET:-this-is-a-stenella-secret-that-is-at-least-32-characters-long!}"
@@ -17,7 +17,7 @@ ALLOW_PRIVATE_FETCH="${ALLOW_PRIVATE_FETCH:-true}"
 
 # Build stenella
 echo "Building stenella..."
-cd "$(dirname "$0")/stenella"
+cd "$(dirname "$0")"
 go build -o stenella .
 
 # Run
