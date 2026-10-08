@@ -133,6 +133,10 @@ go build -o stenella-server ./main.go
 ## Running
 
 ```bash
+# Quick start with run-stenella.sh (handles build + defaults)
+./run-stenella.sh
+
+# Or manually with environment variables:
 export STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!'
 STENELLA_ADMIN_PASSWORD='change-me' ./stenella-server \
   --root=/app/data --port=8084 --libs-dir=static
@@ -153,6 +157,19 @@ Flags (env fallbacks in parentheses):
 | `--platform-path` | `/platform` | mapped-host path that redirects to that client's portal |
 | `--trust-proxy` | `false` (`$STENELLA_TRUST_PROXY=1`) | trust `X-Forwarded-For` for rate-limit keys — only behind a proxy you control |
 | `--allow-private-fetch` | `false` (`$STENELLA_ALLOW_PRIVATE_FETCH=1`) | let server-side feed/OPML fetches reach loopback and private addresses (SSRF guard off) — dev/test only |
+
+### Quick Start Script
+
+```bash
+# All defaults (admin/admin on port 8084)
+./run-stenella.sh
+
+# Custom port
+PORT=8080 ./run-stenella.sh
+
+# Override any setting
+SECRET='your-32-char-secret!!' ADMIN_PASS='secure' ./run-stenella.sh
+```
 
 ## Web surfaces
 
