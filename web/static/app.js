@@ -681,35 +681,7 @@
           ]));
         });
       }).catch(function (e) { box.innerHTML = ''; box.appendChild(errEl(e.message)); });
-    }).catch(function (e) { box.innerHTML = ''; box.appendChild(errEl(e.message)); });
     }
-
-    // public feed ---------------------------------------------------------------
-    var publicFeedPage = 1;
-    function loadPublicFeed(reset) {
-      if (reset) publicFeedPage = 1;
-      var box = $('#public-feed-list'), moreWrap = $('#public-feed-more');
-      var client = document.body.dataset.client || '';
-      if (!client) return;
-      get('/s/feed/' + encodeURIComponent(client) + '/items?page=' + publicFeedPage).then(function (data) {
-        if (reset) box.innerHTML = '';
-        (data.items || []).forEach(function (it) {
-          box.appendChild(el('article', { class: 'feed-item', 'data-id': it.id }, [
-            el('h2', {}, [el('a', { href: it.link, target: '_blank', rel: 'noopener', text: it.title })]),
-            muted(esc(it.source_name || '') + ' · ' + esc(it.published || '')),
-            el('p', { class: 'summary' }, [esc(it.summary || '')])
-          ]));
-        });
-        moreWrap.classList.toggle('hidden', !data.has_more);
-        publicFeedPage += 1;
-      }).catch(function (e) { box.appendChild(errEl(e.message)); });
-    }
-    $('#public-feed-next').addEventListener('click', function () { loadPublicFeed(false); });
-
-    // Load public feed when tab is clicked
-    $$('#tabs button[data-tab="public"]').forEach(function (b) {
-      b.addEventListener('click', function () { loadPublicFeed(true); });
-    });
 
     $('#add-feed-btn').addEventListener('click', function () {
       modal('Add feed source', [
@@ -884,16 +856,37 @@
     // validates the name client-side too and reports the server's verdict
     // verbatim rather than swallowing it.
     function createTable() {
-      modal('New table', [
-        { name: 'table', label: 'Table name (letters, digits and dashes)', placeholder: 'products' },
-        { name: 'columns', label: 'Columns (comma separated)', value: 'id, name', placeholder: 'id, name, price' }
-      ], function (data, handle) {
-        var cols = (data.columns || '').split(',').map(function (c) { return c.trim(); }).filter(Boolean);
+      var cols = [{name:'id', type:'text', required:true}];
+      function buildFields() {
+        var fields = [
+          { name: 'table', label: 'Table name (letters, digits and dashes)', placeholder: 'products' }
+        ];
+        cols.forEach(function(col, idx) {
+          fields.push({ name: 'colname_'+idx, label: 'Column '+(idx+1)+' name', value: col.name || '', kind: 'text' });
+          fields.push({ name: 'coltype_'+idx, label: 'Column '+(idx+1)+' type', value: col.type || 'text', kind: 'select', options: [
+            {value:'text', label:'text'}, {value:'number', label:'number'}, {value:'bool', label:'bool'}, {value:'json', label:'json'}
+          ] });
+        });
+        fields.push({ name: '_addcol', label: 'Add another column', kind: 'checkbox', value: false });
+        return fields;
+      }
+      var handle = modal('New table', buildFields(), function (data, h) {
+        if (data._addcol) {
+          cols.push({name:'', type:'text'});
+          h.close();
+          setTimeout(createTable, 0);
+          return;
+        }
+        var columns = [];
+        cols.forEach(function(col, idx) {
+          var name = (data['colname_'+idx] || '').trim();
+          if (name) columns.push(name);
+        });
         if (!data.table || !data.table.trim()) return alert('A table name is required.');
-        if (!cols.length) return alert('At least one column is required.');
-        return post('/s/api/portal/db/table/create?client=' + qs, { table: data.table.trim(), columns: cols })
+        if (!columns.length) return alert('At least one column is required.');
+        return post('/s/api/portal/db/table/create?client=' + qs, { table: data.table.trim(), columns: columns })
           .then(function () {
-            handle.close();
+            h.close();
             return loadTables().then(function () {
               dbTables.value = data.table.trim();
               return loadRecords();
@@ -939,7 +932,7 @@
           dbTables.appendChild(el('option', { value: t.name }, t.name + ' (' + t.count + ')'));
         });
         if (data.tables && data.tables.length) loadRecords();
-      }).catch(function (e) { });
+      });
     }
     function loadRecords() {
       var table = dbTables.value;
