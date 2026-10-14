@@ -1,145 +1,505 @@
-# stenella — AzzurroTech Data Platform
+# stenella — AzzurroTech open-source intelligence platform
 
-**MIT License © Azzurro Technology Inc.** · standard library only · no external
-Go modules, no JS frameworks, no build tooling.
+**MIT License © Azzurro Technology Inc.** · module `azzurrotech/stenella`
+· **Go standard library only**, plus the embedded **atp** platform (which itself embeds
+**song**, **pod** and **shepherd**). Every interface is plain **HTML, CSS and JavaScript** —
+no frameworks, no bundlers, no build tooling.
 
-stenella is the AzzurroTech data platform. It embeds **atp** (the orchestrator,
-which itself embeds **song**, **pod** and **shepherd**) in-process and uses it
-as middleware: every request flows through atp's auth, scoping, usage logging
-and billing layer exactly like a real client's would. Any atp feature can be
-managed from stenella's UI.
+stenella is a single Go server with **two purposes**:
 
-On top of that, stenella owns:
+1. **An easy-to-use interface for atp** and all of its associated software, packaged so it can
+   be **easily integrated or embedded into other software**.
+2. **An open-source intelligence (OSINT) platform** — the **more important** purpose: it
+   **combines many sources into one feed**, lets an analyst **link, comment on and annotate**
+   what it collects, **group and search** it, and **generate insights from a set of rules** —
+   then presents it all through a **dashboard**, a **feed/timeline**, a **map** and an
+   **information tree**.
 
-- **One feed out of many** — aggregate RSS 2.0, RSS 1.0 (RDF), Atom,
-  JSON-Feed and generic web pages into a single newest-first feed, with search,
-  category and source filters, de-duplication, retention pruning and OPML bulk
-  import.
-- **Encrypted at rest** — every item title/summary/body and every comment body
-  is stored as an AES-256-GCM ciphertext envelope (`*_enc` columns). Item
-  bodies are decrypted in the browser; comments are encrypted *before* they are
-  submitted, so the server stores what it was given and cannot read it.
-- **Collaboration** — comments, pins and a link graph between items, all held in
-  the client's own pod namespace.
-- **Retention** — an hourly sweep reclaims aged-out items, honouring pin, comment
-  and link exceptions, and writes tombstones so a browser can drop the plaintext
-  it cached.
-- **Website hosting & management** — every client gets a siloed static site
-  (song store) served at `/c/{client}/`, managed from the portal file editor.
-- **A search/link homepage** — `/` is a live interface over everything hosted,
-  not a static file.
-- **Shareable links** — token-protected URLs (`/s/x/{id}?t=…`) that render an
-  item, a link, or a whole table (vidi cards), and `combined.xml`/`combined.atom`
-  feeds that can be dropped into any reader.
-- **Link tracking** — every feed element is a pod database row; relationships
-  between rows (and to external URLs) are materialized as real symlink junctions
-  on disk, written through atp's pod pass-through.
+The two are the same server: stenella is an **atp application** — atp is embedded in-process
+and provides the fileserver, the serverless-function registry, the secret vault, the storage
+(pod), the static hosting and rendering (song) and the capability layer (shepherd). stenella
+adds the OSINT model and the views on top; it does **not** re-implement anything atp already
+does.
+
+References this document is written against:
+
+- OSINT, the discipline: <https://en.wikipedia.org/wiki/Open-source_intelligence>
+- What OSINT is and the intelligence cycle: <https://www.sans.org/blog/what-is-open-source-intelligence>
+- The dashboard pattern: <https://www.w3schools.com/projects/project.php?project=DATADASH001>
+- The platform it leverages: [`atp/README.md`](atp/README.md)
+
+---
+
+## What stenella is
+
+A running stenella is **one Go binary**. Start it, point a browser at it, and you have an
+**installable progressive web application** that:
+
+- **subscribes to sources** — RSS 2.0, RSS 1.0 (RDF), Atom, JSON Feed, and ordinary web pages —
+  and **merges them into a single, de-duplicated, newest-first feed**;
+- **models every item as a first-class record** in a graph you own, so you can draw **links**
+  between items (and to external URLs), attach **comments** and **notes**, and **group** items
+  into collections and tags;
+- **searches** across that graph — by metadata always, and by content where you have unlocked
+  the content key in your browser;
+- **runs rule sets** over the graph to produce **insights** — the step that turns raw
+  information into intelligence;
+- shows all of it through four coordinated views (dashboard, feed/timeline, map, information
+  tree) plus the smaller tools an analyst actually uses;
+- and, because it embeds **atp**, exposes **atp itself** — its hosted applications, secrets,
+  functions, and the song/pod/shepherd surfaces — through the same server and the same
+  interface.
+
+It is **identity-free**: it has no account system and does not track readers. A collector owns
+their sources and their notes; a shared link is a capability token, not a login.
+
+---
+
+## The two purposes
+
+### Purpose 1 — the atp interface (embeddable)
+
+atp is *"imported, not just run"*. stenella takes that seriously in two directions:
+
+- **stenella uses atp.** It builds one `*atp.Server` (`atp.New`), mounts it as middleware
+  (`srv.Middleware(next)`), registers its own serverless functions on it
+  (`srv.Handle(method, pattern, fn)`), and reaches the embedded services through the server it
+  was handed (`srv.Secrets()`, `srv.Pod()`, `srv.Song()`, `srv.Shepherd()`, `srv.Head()`,
+  `srv.Headers()`). Nothing here is a fork of atp.
+- **other software uses stenella.** Because a running stenella is itself an `http.Handler`, it
+  can be **embedded** the same way atp can: mounted under a prefix of a larger Go server, or
+  adopted with `srv.Middleware`-style delegation, and extended by registering additional
+  **sources**, **rule sets** and **views** in Go. The OSINT platform is therefore also the
+  reference application for building *anything* on atp.
+
+### Purpose 2 — the OSINT platform (the more important purpose)
+
+Open-source intelligence is **not** just collecting public data. SANS puts it plainly:
+*"information does not equal intelligence"*. Raw gathered data becomes intelligence only after
+it is evaluated, organised, has meaning assigned to it, and is aimed at a **specific
+intelligence question**. stenella is built around that distinction:
+
+| Stage | What most feed readers do | What stenella does |
+|---|---|---|
+| Collection | subscribe to feeds | many feeds → **one** combined feed, plus pages and records |
+| Processing | show newest first | normalise, **de-duplicate**, classify, **extract entities & places** |
+| Analysis | — | **links, comments, notes**; **groups**; **search** |
+| Production | — | **rule-driven insights** ("what does this data matter for?") |
+| Dissemination | a list | dashboard, timeline, map, tree, exports, shared reads |
+
+Every stage is a file- or function-backed behaviour in the same Go server, which is what makes
+the platform honest about where a claim comes from: an item, a link, a note and an insight are
+all records you can inspect, export and cite.
+
+---
+
+## Open-source intelligence, the discipline we build to
+
+### Definition
+
+OSINT is the **collection and analysis of data gathered from open sources** — overt, publicly
+available material — **to produce intelligence**. It is used in national security, law
+enforcement and business intelligence to answer intelligence requirements. The definitions
+stenella is designed around:
+
+- **DHS** — intelligence derived from publicly available information, collected and
+  disseminated *promptly* to address *specific* needs.
+- **NATO** — intelligence from publicly available information and other unclassified data with
+  limited public distribution or access.
+- **EU** — collecting and analysing open-source information to generate **actionable**
+  intelligence.
+- **SANS** — intelligence produced by collecting, evaluating and analysing publicly available
+  information **with the purpose of answering a specific intelligence question**.
+
+Two ideas follow directly and shape the whole design:
+
+1. **Information ≠ intelligence.** stenella never presents raw items as conclusions. Items are
+   *information*; **insights** are the analysed output, and they always say which items,
+   links and rules produced them.
+2. **A question comes first.** A **collection** (a group plus its sources and rule sets) is
+   tasking: it encodes the intelligence question the analyst is answering.
+
+### The intelligence cycle
+
+stenella's pipeline *is* the intelligence cycle, named the same way:
+
+| Cycle stage | stenella stage | Where it lives |
+|---|---|---|
+| Preparation / tasking | a **collection** ("the question"): sources, groups, rules | `stenella/collections` records |
+| Collection | **aggregate** RSS/Atom/JSON/pages into one feed | `feed` package + fetch functions |
+| Processing | **normalise, de-duplicate, classify, extract** entities/places | `process` package |
+| Analysis & Production | **links, comments, notes, groups, search**, then **rules → insights** | `graph`, `search`, `rules` packages |
+| Dissemination | dashboard, timeline, map, tree, exports, shares | `views` + atp hosting/shares |
+
+The cycle is **iterative**: an insight can spawn a new collection; a new source re-runs the
+rules; every stage is observable and re-runnable.
+
+### Source categories
+
+The six OSINT categories of information flow all map to a stenella source kind:
+
+| Category | Examples | stenella source kind |
+|---|---|---|
+| Media | newspapers, magazines, radio, TV | `feed` (site feeds, transcripts) |
+| Internet | online publications, blogs, social media, video | `feed`, `page` |
+| Public government data | reports, budgets, hearings, speeches | `feed`, `page` |
+| Professional & academic | journals, papers, theses | `feed` |
+| Commercial data | assessments, databases, imagery | `feed`, `dataset` (imported) |
+| Grey literature | reports, preprints, patents, working papers | `feed`, `page` |
+
+### Passive by default
+
+stenella is **passive**: it reads published material and never engages a subject. It does not
+post, comment, follow, like or message on any external platform, and it makes **no outbound
+request the operator did not configure**. Active collection is deliberately out of scope: it is
+a human decision with legal weight, not a feature the server performs for you (see
+[Ethics](#ethics-legality-and-privacy)).
+
+---
+
+## How stenella leverages atp
+
+atp is embedded, not re-implemented. Each atp surface does one job for stenella:
+
+| atp surface | atp API | what stenella uses it for |
+|---|---|---|
+| server | `atp.New(atp.Options{…})`, `srv.Middleware(next)` | the whole HTTP surface; mounted in-process and embeddable by a host |
+| function registry | `srv.Handle(method, pattern, fn)` | fetchers, processors, rule evaluation, geocoding, exports — all as serverless functions bound to verbs + endpoints |
+| secrets vault | `srv.Secrets()` | feed credentials, API tokens and share keys — server-side only, never rendered into the page |
+| pod | `srv.Pod()` | the record store: sources, items, links, comments, notes, groups, rules, insights |
+| song | `srv.Song()` | static hosting, server-side templates and the head/Web-Component injection for the views |
+| shepherd | `srv.Shepherd()` | identity-free capability tokens for share links and operator sessions |
+| head manager | `srv.Head()` | one place that injects the PWA manifest, OpenSearch document, preload hints and per-view fragments |
+| header manager | `srv.Headers()` | the security/privacy/performance header policy for every response |
+
+Because atp already **generates the client-app plumbing** (web app manifest, service worker,
+OpenSearch description, cache and security headers, media and WebAssembly delivery), stenella's
+front end is a PWA *by construction* and the OSINT code only has to describe its data.
+
+---
+
+## The OSINT pipeline
+
+### 1. Collection — one feed out of many
+
+A **source** is a URL plus a kind and a schedule:
+
+```text
+kind: feed | page | dataset      # feed → RSS2/RSS1(RDF)/Atom/JSON Feed; page → generic extraction
+url:  https://example.org/feed.xml
+collection: elections-2026        # the group / tasking this source serves
+every: 15m                        # fetch cadence (fetcher is an atp function)
+acl:  public | private | protected
+```
+
+The four collection methodologies the discipline names are all covered by these kinds:
+**social-media intelligence** and **search-engine data mining/scraping** arrive as feeds or as
+extracted pages, **public-records checking** is a feed or page source, and **data-broker
+matching** is deliberately out of scope — matching and verification run against records you
+import yourself, never against a third-party data broker.
+
+Fetching and parsing are **atp serverless functions**, so they are registered, observable and
+replaceable:
+
+```go
+srv.Handle("POST", "/api/sources/{id}/fetch", stenella.FetchSource)
+srv.Handle("POST", "/api/collections/{id}/refresh", stenella.RefreshCollection)
+```
+
+Parsing is **baseline Go**: `encoding/xml` for RSS/RDF/Atom and `encoding/json` for JSON Feed —
+no third-party parser. Every fetched item is normalised to one shape (title, summary, body,
+author, link, guid, categories, published, fetched, source, collection) and **merged into a
+single combined feed** that is both a page and a machine-readable document:
+
+```text
+/feeds/{collection}.xml     # the aggregated RSS/Atom any reader can subscribe to
+/feeds/{collection}.json    # the same items as JSON for the app and for exports
+```
+
+**De-duplication** is by stable identity (guid, then canonical link, then a content hash), so
+the same story from five wires collapses to one item with **five source attributions** — the
+first step from information toward intelligence.
+
+### 2. Processing — normalise, de-duplicate, classify, enrich
+
+After collection, each item is processed (again as an atp function, so it can be re-run):
+
+- **Normalise** — one item shape regardless of source format.
+- **De-duplicate** — collapse cross-source duplicates, keeping every attribution.
+- **Classify** — assign the `acl` class, categories and any configured labels.
+- **Extract** — pull **entities** (people, organisations, places, handles, keywords) and
+  **coordinates** where the item carries them, into the graph.
+- **Link** — create candidate links (shared entities, near-duplicate content, explicit
+  references) for the analyst to accept, reject or extend.
+
+The distinguishing claim of the source categories above holds here too: this is processing, not
+conclusions. Nothing becomes an *insight* until a rule says so.
+
+### 3. Analysis — links, comments and notes
+
+An analyst's work is captured as records, not as browser state:
+
+- **Links** — typed, directed edges between two items, or between an item and an external URL:
+  `relation` (e.g. `supports`, `contradicts`, `duplicates`, `references`, `follows`),
+  a `label`, and who drew it. Links are how "associations between entities" become explicit.
+- **Comments** — threaded, attributable annotations on an item, a link, a group or an insight.
+- **Notes** — free-form analyst notes, attachable to anything recorded, kept with the
+  collection they belong to so a later reader knows *why* something mattered.
+
+Automatic candidate links (from processing) and human links live in the same table with an
+`origin` field (`auto` | `human`), so an analyst can always see which is which.
+
+### 4. Grouping and search
+
+- **Groups** (collections, tags, saved queries) organise items without moving them. An item may
+  belong to many groups; a group may be a fixed list, a rule ("everything matching X"), or a
+  manual selection.
+- **Search** is two-layered:
+  - **Server-side**, over **envelope metadata** — source, collection, category, author, link
+    host, guid, date range, and any extracted entity. This is always available and needs no key.
+  - **Client-side**, over **content** — because bodies are stored **encrypted at rest** (pod's
+    optional encryption, unwrapped by the browser with the collection's content key), full-text
+    search over decrypted text runs in the browser and never sends plaintext to the server.
+
+### 5. Insight rules
+
+An **insight** is a conclusion produced by a **rule set** evaluated over the graph — the
+"meaning-making" step the sources insist on. Rules are declarative data (stored as pod records,
+editable in the UI), evaluated by an atp function:
+
+```text
+rule "cross-source convergence":
+  when  3 items from >= 2 distinct sources
+        mention entity "Acme Corp"
+        within 48h
+  then  insight severity=watch  "Acme Corp activity cluster"
+        cite  the matched items and links
+rule "contradiction":
+  when  two items are linked relation=contradicts
+  then  insight severity=review  "Conflicting reports"  cite both items
+rule "new place":
+  when  an item's place is not in any prior item of the collection
+  then  insight severity=note  "First mention of <place>"
+```
+
+Each insight **cites** the items, links and rule that produced it and carries a **severity** and
+a **timestamp**, so an analyst can triage, dismiss with a reason, or promote it to a note. Rules
+are the part most worth extending, so the rule schema is deliberately small (match conditions +
+aggregate + thresholds) and the engine is a normal Go package:
+
+```go
+srv.Handle("POST", "/api/rules", stenella.CreateRule)
+srv.Handle("POST", "/api/rules/{id}/run", stenella.RunRule)
+srv.Handle("GET", "/api/insights", stenella.ListInsights)
+```
+
+### 6. Dissemination
+
+Output leaves stenella as:
+
+- a **combined feed** (RSS/Atom/JSON) per collection;
+- **exports** — JSON and CSV of items, links, insights and citations;
+- a **timeline** and an **information tree** an analyst can read and screenshot;
+- a **share** — a shepherd capability token that grants read-only access to one item, one
+  group or one insight, revocable and rate-limited.
+
+---
+
+## The information model
+
+Everything is a pod record in the collection's namespace; every record is a plain XML file you
+can read. The model is intentionally small and graph-shaped:
+
+| Record | Is | Key fields (envelope) | Optional ciphertext |
+|---|---|---|---|
+| `source` | a subscribed origin | kind, url, collection, schedule, acl | credentials |
+| `item` | one gathered piece of information | id, source, link, guid, author, categories, published, fetched, acl, place, bytes | `title_enc`, `summary_enc`, `content_enc` |
+| `entity` | a person/org/place/handle/keyword | id, kind, name, resolved coordinates (optional) | — |
+| `link` | a typed edge | from, to_kind, to_id/to_url, relation, label, origin, created_by | — |
+| `comment` | an annotation | on (record ref), author token, created_at | `body_enc` |
+| `note` | analyst free text | on, collection, created_at | `body_enc` |
+| `group` | a collection / tag / saved query | id, name, kind, predicate | — |
+| `rule` | a rule set | id, name, conditions, window, severity | — |
+| `insight` | a rule-produced conclusion | id, rule, severity, created_at, citations | — |
+
+The split that matters is **envelope vs ciphertext**: only envelope fields are indexed, so
+grouping, filtering, metadata search and rule matching never require reading plaintext. Where a
+collection's content key is unlocked in the browser, the encrypted title/summary/body/comment/note
+fields are decrypted **client-side**. This follows atp's model: encrypted at rest, and the server
+stores what it is given.
+
+---
+
+## Views
+
+All four views are server-side-rendered from `go:embed`-ed templates and enhanced with baseline
+JavaScript. They share one head fragment (managed by `srv.Head()`) and one data source (the
+collection's records via the JSON endpoints), and each is deep-linkable and offline-capable as
+part of the PWA.
+
+### The dashboard view
+
+The dashboard mirrors the **W3Schools "Analytics Dashboard" (`DATADASH001`)** pattern — filters,
+KPI cards, and charts that update live as you filter — reimplemented with **baseline** HTML,
+CSS and JavaScript:
+
+- **Regions**: a heading, a `#filters` bar, a `#kpis` row and a `#charts` area.
+- **Filters**: category, source, collection and date range (plus free-text).
+- **KPI cards**: item count, distinct sources, open insights, and time since the newest item
+  (each value in a `.kpi-value` element).
+- **Charts**: bar (items per source), line (items over time), pie (items per category), drawn
+  with the standard **`<canvas>` 2D API** — **no chart library**, which is the one deliberate
+  difference from the reference project (whose Chart.js dependency would violate the
+  baseline-only rule).
+- **Live update**: changing a filter recomputes KPIs and **updates** the existing charts in
+  place rather than recreating them.
+
+### The feed / timeline view
+
+The heart of the product: the **combined feed** as a chronological **timeline**, newest first,
+with per-item source attribution, category chips, the collection's acl class, and inline
+indicators for existing links, comments and notes. From here an analyst can open an item, draw
+a link, add a comment or note, add the item to a group, or jump to the same item on the map or
+in the tree. It renders the same data as `/feeds/{collection}.xml`, so what you see is what any
+RSS reader would get.
+
+### The map view
+
+Items and entities that carry coordinates are placed on a **map**:
+
+- the base map is rendered from a bundled, offline **world outline** drawn with inline SVG or
+  `<canvas>` (an equirectangular projection), so the default view makes **no external request**
+  and leaks nothing;
+- markers are items/entities; clustering groups nearby points; clicking a marker opens the item
+  and its links;
+- an **optional** richer base (tiles from a geocoder/tile server the operator configures) can be
+  enabled explicitly; it is off by default because it is an outbound call and a privacy decision
+  (see [Ethics](#ethics-legality-and-privacy));
+- coordinates come from the item itself when present, or from a **geocoding function** the
+  operator may enable.
+
+### The information tree view
+
+The tree makes the graph legible: **sources → groups → items → entities → links/insights**,
+collapsible at every level, again in baseline HTML (nested lists) or inline SVG for large
+graphs. It is the view for "how does this item relate to that one", for spotting clusters, and
+for exporting a branch as a citation-ready outline.
+
+### Other elements
+
+The smaller tools an analyst expects, all baseline:
+
+- a **search bar** (metadata server-side; content client-side when unlocked) with saved queries;
+- **tags** and **watchlists** (a watchlist is a rule set plus an alert);
+- an **insights inbox** with severity triage, dismiss-with-reason and promote-to-note;
+- **OPML import/export** for bulk source management;
+- **exports** — JSON/CSV, the combined feed, and a printable briefing of a collection;
+- **accessibility and comfort** — keyboard navigation, dark mode, responsive layout, offline.
+
+---
+
+## Progressive web application
+
+stenella is a PWA, and mostly for free: because it runs on atp, atp **generates** the web app
+manifest, the service worker and the head links (`<link rel="manifest">`, the OpenSearch
+`<link rel="search">`, resource hints) and sets the cache/compression policy. stenella supplies
+the app metadata (name, icons, theme) and the views; the plumbing is atp's job. The effect:
+
+- the platform is **installable** and runs in its own window (`display: standalone`);
+- the **app shell is precached**, so the last-read items and the UI work **offline**;
+- the combined feed is also an **OpenSearch** provider, so a browser can search a collection.
+
+---
+
+## Source reliability and disinformation
+
+The sources are explicit that the open nature of OSINT makes it a target: information
+explosion makes source evaluation hard, and state actors plant false information (even
+manipulated geospatial data). stenella treats this as a first-class concern rather than hiding
+it:
+
+- **Provenance is always attached.** Every item carries its source(s); every insight cites the
+  items, links and rule that produced it.
+- **Source reliability is recorded, not assumed.** A source can be graded; grading is visible
+  wherever its items appear, and rules can weight by it.
+- **Cross-source corroboration is measurable.** Because duplicates collapse with all their
+  attributions, and entities are shared, "one source vs many" is queryable.
+- **Human judgement is kept.** Auto-links and auto-insights are labelled `auto` and can be
+  disputed with a comment; nothing silently overwrites an analyst's assessment.
+
+---
+
+## Ethics, legality and privacy
+
+OSINT is a lawful, public-source discipline, and stenella is built to keep it that way. The
+ethical principles the sources name are design constraints here:
+
+| Principle | How stenella respects it |
+|---|---|
+| **Legal boundaries** | passive collection only; no authentication bypass, no engagement, no dark-web clients |
+| **Avoid harm** | no doxxing features; no aggregation of personal data beyond what a source published; no automated action against a subject |
+| **Privacy** | identity-free; no reader tracking; content encrypted at rest; the base map and all analytics are offline by default |
+| **Integrity & accuracy** | provenance and citations on every insight; auto vs human marked; dismissal requires a reason |
+| **Purpose limitation** | work is scoped to a **collection** ("the question"); exports and shares are the analyst's explicit act |
+| **Transparency & accountability** | every record is a readable file; rules are visible data; access is via revocable capability tokens, not silent accounts |
+
+Because atp's access model adds **no security requirement** to reach hosted resources, the
+platform is open by default and the operator chooses what to privilege; stenella's own
+operator actions and shares are the capability layer on top.
+
+---
+
+## Extending stenella
+
+The system is meant to grow without a rewrite. Every extension point is a Go function
+registered on the embedded atp server, or a record type in pod:
+
+| Want to… | Do this |
+|---|---|
+| add a source kind | register a fetch/parse function with `srv.Handle`; it returns items in the normal shape |
+| change processing | add or replace processing functions (normalise, dedupe, classify, extract) |
+| add an entity extractor | register an extractor function; it emits `entity` records |
+| add a rule vocabulary | add condition/comparison kinds to the rule engine package |
+| add an insight kind | emit an `insight` record with its citations from a rule |
+| add a view | add a template + a JSON endpoint; it is a PWA route like the others |
+| change storage | swap the pod table set; the model is records, not a fixed schema |
+| embed in other software | mount stenella as an `http.Handler`, or use it as the reference for mounting atp |
+
+The design rule is the same as atp's: **the platform is imported and expanded, not forked.**
+
+---
 
 ## Layout
 
-```
-stenella/                 # this module (superproject)
-├── main.go               # flags + embedded templates/libs; port 8084 default
-├── atp/                  # submodule — the embedded orchestrator (song/pod/shepherd)
-├── static/               # veni, vidi, vici, vini — the four JS submodules
-│   ├── veni/             #   web-component identification & registration
-│   ├── vidi/             #   pod output rendering (cards + pagination)
-│   ├── vici/             #   cookies + client-side AES-256-GCM encryption
-│   └── vini/             #   workflows / data-passing management
-├── crypt/                # content-key store + v1 envelope seal/open
-├── web/                  # stenella HTTP layer (pages, portal API, admin API)
-│   ├── collab.go         #   comments, pins, item links (pod-backed)
-│   ├── retention.go      #   hourly sweep + tombstone log
-│   ├── collabapi.go      #   collaboration / retention / vault / usage API
-│   └── signup.go         #   public self-service client provisioning
-├── feed/                 # source management + combined-feed engine
-│   └── scraper.go        #   heuristic generic-site extraction
-├── links/                # link junctions + token-protected shares
-├── billing/              # income aggregation from atp usage logs
-├── atpclient/            # in-process client for the embedded atp surface
-├── scripts/standalone.sh # proves pod/shepherd/song build with no shared code
+```text
+stenella/                     # this module (superproject)
+├── main.go                   # flags; builds the atp server; mounts stenella's functions
+├── atp/                      # submodule — the embedded platform (song/pod/shepherd)
+├── collections/              # tasking: sources, groups, rules per collection
+├── feed/                     # source fetch + RSS/RDF/Atom/JSON parsing + combined output
+├── process/                  # normalise, de-duplicate, classify, entity/place extraction
+├── graph/                    # items, entities, links, comments, notes
+├── search/                   # metadata search (server) + content search (browser)
+├── rules/                    # rule engine → insights
+├── views/                    # dashboard, feed/timeline, map, tree (+ their templates)
+├── web/                      # HTTP layer: page routes, JSON APIs, shares
+└── static/                   # baseline CSS + JS (charts, map, tree, app shell helpers)
 ```
 
-## Data model
+`go.mod` is `require`-free apart from the embedded platform modules (`azzurrotech/atp`, and
+transitively `pod`, `shepherd`, `song`), replaced by their submodule worktrees.
 
-Every record lives inside the owning client's pod namespace. The split that
-matters is which fields are **envelope** (clear) and which are **ciphertext**:
+---
 
-| Record | Table | Envelope (clear) fields | Ciphertext fields |
-|---|---|---|---|
-| item | `<client>/items` | id, source id/name, link, guid, author, categories, published, fetched, `acl_class`, bytes | `title_enc`, `summary_enc`, `content_enc` |
-| comment | `<client>/comments` | id, item ref, author token, created_at, bytes | `body_enc` |
-| pin | `<client>/pins` | id, item ref, created_by, created_at | — |
-| link | `<client>/links` | id, from_id, to_kind, to_id, to_url, relation, label, created | — |
-| client | `<client>/client` | id, name, signup date, content key id | — |
+## Running locally
 
-Only envelope fields are indexed, so ACL gating, retention and search never
-require reading plaintext.
-
-## Encryption, and where the boundary actually is
-
-- **Encrypted at rest, always.** Bodies are sealed with a per-client 32-byte
-  content key using the wire format `base64(salt).base64(iv).base64(ciphertext)`
-  — PBKDF2-SHA256 ×100k → AES-256-GCM. That is exactly what
-  `vici.encrypt`/`vici.decrypt` speak,
-  so the browser opens an envelope with the stock library and no glue format.
-- **Encrypt-before-submit for authored content.** A comment body is encrypted in
-  the browser and POSTed as ciphertext. The server stores the payload verbatim:
-  it cannot read, index, log or modify it.
-- **No server-side plaintext search.** Free-text queries match envelope metadata
-  only (source, categories, author, link host, guid). Full-text search over
-  decrypted bodies runs client-side.
-- **Documented weakening.** Because ingestion is server-side, a server that
-  fetches a feed and renders an RSS export *can* read what it fetched. The claim
-  is "encrypted at rest", not "the server never sees plaintext". The content key
-  is released only to an authenticated session of that client, so per-device
-  envelope re-keying for multi-device access remains open work.
-
-## Access classification
-
-Three classes, mirroring shepherd's directory tree:
-
-| Class | Who reads it | Unauthenticated endpoint |
-|---|---|---|
-| `public` | anyone | served |
-| `private` | the owning client's authenticated session | withheld |
-| `protected` | the owning client plus explicitly named clients | withheld |
-
-The class is stamped on the **item** at ingest time, not resolved from the source
-at read time, so reclassifying a source never rewrites history and an item cached
-as public cannot be served after its source is tightened. The unauthenticated
-feed endpoints pin the class to `public` server-side and ignore any
-caller-supplied `acl` parameter.
-
-## Retention
-
-The sweep runs hourly as a named workflow, so it inherits logging and usage
-accounting. The default window is 24h (per source `retention_days`, clamped to
-`[1, 365]`), with three exceptions: an item with a pin, an item referenced by any
-comment, and an item reachable from a surviving item through the link graph. A
-sweep drops matching rows from the cache **and** from pod, then writes a
-tombstone the browser polls so its cached plaintext can be dropped too.
-
-## Building
-
-```bash
+```sh
+# build one binary
 go build -o stenella-server ./main.go
-```
 
-`go.mod` is `require`-free: only our own modules (`atp`, and hence `pod`,
-`shepherd`, `song`) are involved, replaced by their submodule worktrees.
-`go.sum` is intentionally empty.
-
-## Running
-
-```bash
-# Quick start with run-stenella.sh (handles build + defaults)
-./run-stenella.sh
-
-# Or manually with environment variables:
-export STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!'
-STENELLA_ADMIN_PASSWORD='change-me' ./stenella-server \
-  --root=/app/data --port=8084 --libs-dir=static
+# run it
+STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!' \
+  ./stenella-server --root ./data --port 8084
 ```
 
 Flags (env fallbacks in parentheses):
@@ -148,179 +508,50 @@ Flags (env fallbacks in parentheses):
 |---|---|---|
 | `--port` | `8084` | listen port |
 | `--root` | `./data` | shared data root (atp stores, pod records, feeds, links, shares) |
-| `--secret` | *(required)* `$STENELLA_SECRET` | master AES/HMAC secret, ≥ 32 bytes |
-| `--admin-user` | `admin` | atp administrator username |
-| `--admin-pass` | `admin` (`$STENELLA_ADMIN_PASSWORD`) | atp administrator password (a startup warning is logged if neither flag nor env is set) |
-| `--public-base` | `""` | absolute base URL for share links (e.g. `https://azzurro.tech`) |
-| `--libs-dir` | `static` | directory with the `veni/vidi/vici/vini` JS worktrees |
-| `--host-site` | azzurro.tech and www.azzurro.tech | map a public host to a client site at `/`; repeatable (`host=client`) |
-| `--platform-path` | `/platform` | mapped-host path that redirects to that client's portal |
-| `--trust-proxy` | `false` (`$STENELLA_TRUST_PROXY=1`) | trust `X-Forwarded-For` for rate-limit keys — only behind a proxy you control |
-| `--allow-private-fetch` | `false` (`$STENELLA_ALLOW_PRIVATE_FETCH=1`) | let server-side feed/OPML fetches reach loopback and private addresses (SSRF guard off) — dev/test only |
+| `--secret` | *(required)* `$STENELLA_SECRET` | platform secret (≥ 32 bytes): vault key + token signing |
+| `--admin-user` / `--admin-pass` | `admin` | atp operator credentials (a warning is logged if unset) |
+| `--public-base` | `""` | absolute base URL for share links |
+| `--allow-outbound` | `false` | permit outbound fetches beyond configured sources (off by default) |
+| `--map-tiles` | `""` | optional external tile base URL; empty = offline base map |
 
-### Quick Start Script
+---
 
-```bash
-# All defaults (admin/admin on port 8084)
-./run-stenella.sh
+## Deploying
 
-# Custom port
-PORT=8080 ./run-stenella.sh
+One static binary plus a data directory. Cross-compiles to any Go target:
 
-# Override any setting
-SECRET='your-32-char-secret!!' ADMIN_PASS='secure' ./run-stenella.sh
+```sh
+GOOS=linux GOARCH=amd64 go build -o stenella-server ./main.go
 ```
 
-## Web surfaces
+Terminate TLS at a front proxy (Caddy, nginx) and forward to `--port`. Media and WebAssembly
+are served by atp with correct types and range support; the security headers (CSP, nosniff,
+HSTS, permissions, COOP/COEP) come from atp's header manager, so there is nothing to configure
+per deployment. A container image is a two-line `Dockerfile` around the binary.
 
-| Path | Who | What |
-|---|---|---|
-| `/` | public | search / link homepage over everything hosted |
-| `/s/portal?client={client}` | client | the client portal (feed, database, sites, links, shares, billing) |
-| `/s/admin` | admin | the super-admin console (clients, secrets, feeds, income) |
-| `/s/feed/{client}` | public | a client's combined feed as HTML |
-| `/s/feed/{client}/combined.xml` / `combined.atom` | public | the aggregator output for any RSS/Atom reader |
-| `/s/feed/{client}/items` | public | JSON item stream of a combined feed (`q`, `category`, `source`, `since`, `page`, `pageSize`) |
-| `/s/x/{id}?t={token}` | public | share page (item / link / vidi-rendered table) |
-| `/s/api/x/{id}?t={token}` | public | same share as JSON (vidi `dataSource`) |
-| `/c/{client}/` | public | the client's hosted website (song silo) |
-| `/s/signup`, `POST /s/api/signup` | public | self-service client provisioning (rate limited, answers once per client id) |
-| `/login`, `/logout`, `/s/api/client/login` | — | admin + client sessions |
+---
 
-On a host configured with `--host-site`, the client silo is served at `/`;
-`/s/**` remains platform-owned and the normalized `--platform-path` redirects
-to `/s/portal?client={client}`. Host matching ignores case, a trailing DNS dot,
-and any valid numeric port. Only the platform path and its `/`-delimited descendants
-redirect, so a page such as `/platformish` remains a client-site URL. The host
-dispatcher runs before ATP: a mapped host cannot address another client's
-`/c/{client}/...` silo, and disabled clients are not publicly served.
+## Development
 
-### Honest integration boundaries
-
-- The `azzurrotech` checkout is a browser-local VINI demonstration. It does not
-  capture payment, create a server-side order, send an invoice, or provide a
-  consumer/WooCommerce account system. A real purchase requires a separately
-  implemented server-side order and payment flow.
-- The public site-data endpoint is read-only JSON for the named client's pod
-  namespace. Management tables and share tokens are not public; unsafe path
-  segments are rejected before the HTTP mux can normalize them.
-- RSS/Atom and the JSON item endpoint are the supported public content APIs.
-  WordPress `wp-json`, WooCommerce, and oEmbed endpoints are not implemented.
-- The four Emperor42 browser libraries are standard-library/static assets. The
-  optional Go demos under `static/` are developer services: they default to
-  loopback, and a non-loopback bind requires their documented API token.
-
-### Portal API (client session or admin impersonation) — `client` query param
-
-- feeds: `GET/POST /s/api/portal/feeds`, `PUT/DELETE …/feeds/{id}`,
-  `POST …/feeds/{id}/fetch`, `POST …/import` (OPML), `POST …/refresh`,
-  `GET …/items`
-- database (pod): `GET …/db/tables`, `GET/POST …/db/table`, `DELETE …/db/record`
-- links: `GET/POST …/links`, `DELETE …/links/{id}`
-- shares: `GET/POST …/shares`, `DELETE …/shares/{id}`
-- sites (song): `GET …/sites/meta`, `GET …/sites/files`, `POST/PUT …/sites/file`,
-  `DELETE …/sites/file`
-- vault: `GET/POST/DELETE …/secrets`, `GET/PUT …/payment`,
-  `GET …/vault` (the content key, for that client only)
-- billing: `GET …/billing`, `GET …/usage`
-- keys (shepherd): `POST …/keys`, `GET …/keys/verify`, `POST …/revoke`
-- collaboration: `GET/POST …/items/comments`,
-  `DELETE …/items/comments/{id}`, `POST/DELETE …/items/pin`,
-  `GET …/items/pins`
-- retention: `GET …/retention`, `POST …/retention/sweep`
-- identity: `GET …/whoami`, `POST /s/api/client/login|logout`
-
-A comment body is posted already encrypted (`body_enc`), so the portal API stores
-and returns ciphertext. Comment reads return the envelope; decrypting it is the
-browser's job.
-
-### Admin API (atp session)
-
-`GET /s/api/admin/summary|income|clients|feeds|config|usage|retention`,
-`POST /s/api/admin/client`, `PUT/DELETE /s/api/admin/client/{id}`,
-`GET/POST/DELETE /s/api/admin/secrets`, `PUT /s/api/admin/income`,
-`PUT /s/api/admin/config`, `POST /s/api/admin/retention/sweep`.
-
-## Storage layout under `--root`
-
-```
-data/
-├── atp/
-│   ├── clients.json        # atp client registry (atp-managed)
-│   ├── secrets/            # AES-256-GCM vault (atp-managed)
-│   ├── logs/               # per-client request logs (atp-managed)
-│   └── usage/              # hourly usage rollups (atp-managed)
-├── pod/{client}/{table}/   # pod filesystem database — records are <id>.xml
-├── song/{client}/          # siloed static sites
-├── stenella/
-│   ├── feeds/{client}.json # feed source configs
-│   ├── cache/{source}.json # fetched item caches (retention-pruned)
-│   ├── links/{client}/{id}/# link junctions — symlinks to the pod records
-│   └── shares/
-│       ├── index.json      # public share id → client index
-│       └── {client}/{id}/  # share junctions — symlink to the shared record/table
+```sh
+go build ./...
+go vet ./...
+go test ./...
 ```
 
-Links and shares are **physical**: a link junction holds `from.xml` → and
-`to.xml` → symlinks into `data/pod/{client}/items/`; a share junction's `target`
-is a symlink to the shared record or table directory. A stale symlink is the
-on-disk signal that the pointed-at row moved or died — that's the "tracking".
+The behaviour this document specifies is delivered in stages: the launch stage ships this
+specification, the embedded **atp** submodule and the repository scaffolding; the Go packages
+(`collections`, `feed`, `process`, `graph`, `search`, `rules`, `views`, `web`) and their
+atp-registered functions are the contract they implement. Where this document names atp, song,
+pod or shepherd behaviour, those details are already implemented and tested inside the
+submodule — see [`atp/README.md`](atp/README.md).
 
-## Front end
+---
 
-Portal, admin, feed, share and signup pages are plain HTML rendered from
-`go:embed`-ed templates with vanilla `app.js`. The four Emperor42 libraries
-(`static/{veni,vidi,vici,vini}`) are loaded into memory at startup
-(`--libs-dir`) and served at `/s/static/…`:
+## References
 
-- **veni** discovers and registers custom elements;
-- **vidi** renders pod tables supplied by `/s/api/x/{id}?t=…` shares;
-- **vici** owns all cookies and client-side encryption;
-- **vini** drives multi-step flows (portal login, wizards) with persisted
-  `vini_workflows` progress.
-
-`web/static/collaboration.js` is a second bundle, loaded after the libraries and
-only where the browser holds a content key (the portal items pane). It fetches
-the passphrase once, opens each `*_enc` envelope with vici, encrypts comment
-bodies before POST, filters decrypted text client-side, and polls for tombstones
-so a swept item is deleted rather than merely hidden. Without vici it still
-renders metadata — it just cannot show bodies, post comments or search text.
-
-## Tests
-
-```bash
-go build ./... && go vet ./... && staticcheck ./...
-go test ./...        # feed parsing/combine, scraping, link+share junctions, web walkthrough
-go test -race ./...  # same, under the race detector
-./scripts/standalone.sh   # pod, shepherd and song each build/vet/test alone
-```
-
-The web test drives a full admin → client → portal → feed → link → share →
-billing → income cycle against an in-process atp service and verifies the
-symlink junctions on disk. Separate tests cover the collaboration surface
-(comment ciphertext round-trip, pin idempotence, link survival set, retention
-sweep + tombstones, content-key client scoping, signup, usage dashboard), ACL
-classification and the public feed's refusal to serve private or protected items,
-and the static asset embed.
-
-`scripts/standalone.sh` is a shell script rather than a Go test on purpose: a
-test inside one module cannot see what the *other* modules require, so it could
-pass while the module boundary rotted. `web/standalone_test.go` asserts the same
-properties from inside the toolchain, so a plain `go test ./...` still catches a
-regression.
-
-## Container
-
-`Dockerfile` builds the same binary (`EXPOSE 8084`). Run with:
-
-```bash
-docker build -t stenella .
-docker run --rm -p 8084:8084 \
-  -e STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!' \
-  -e STENELLA_ADMIN_PASSWORD='change-me' \
-  stenella
-```
-
-TLS termination is expected at a Caddy reverse proxy in front (see
-`super/stenella_atp/Caddyfile` for the historical routing table; the canonical
-service→port map is in the workspace AGENTS.md, §8).
+- **Open-source intelligence (Wikipedia)** — <https://en.wikipedia.org/wiki/Open-source_intelligence>
+- **What is Open-Source Intelligence? (SANS)** — <https://www.sans.org/blog/what-is-open-source-intelligence>
+- **Analytics Dashboard project (W3Schools, `DATADASH001`)** — <https://www.w3schools.com/projects/project.php?project=DATADASH001>
+- **atp — AzzurroTech Platform** — [`atp/README.md`](atp/README.md)
+- **Go for Web Development** — <https://go.dev/solutions/webdev>
