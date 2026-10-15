@@ -220,6 +220,68 @@ single combined feed** that is both a page and a machine-readable document:
 the same story from five wires collapses to one item with **five source attributions** — the
 first step from information toward intelligence.
 
+#### The combined feed that can be shared — implemented
+
+Collection is live today as **one URL you can hand to anybody**:
+
+```text
+https://stenella.example.org/stenella/feeds/all.xml
+```
+
+`GET /stenella/feeds/all.xml` fetches every configured source, merges them into a single
+RSS 2.0 document and serves it with no account, no token and no cookie — atp's access model
+adds no security to hosted resources, so the URL is the whole interface. `all` is the
+collection name for the configured source set, which makes the endpoint the
+`/feeds/{collection}.xml` shape described above.
+
+The sources behind that example URL are:
+
+| Source | Origin feed |
+|---|---|
+| **RadioItalia (RAI)** | `https://www.radioitalia.it/rss.xml` |
+| **ANSA** | `https://www.ansa.it/sito/ansait_rss.xml` |
+| **CBC** | `https://www.cbc.ca/webfeed/rss/rss-topstories` |
+| **Communications Security Establishment** | the Government of Canada news API (`dept=communicationssecurity`) |
+| **Government of Canada** | the same API, national news feed |
+
+**It contains no links and no private elements.** That is the purpose of the endpoint: it is
+safe to give to a partner, a bot or a stranger. Each item is reduced to a title, a plain-text
+summary, a publication date and the source **name**; everything else is removed before the
+document is rendered:
+
+| Removed — links | Removed — private elements |
+|---|---|
+| `<link>` and `<guid>` URLs, `<enclosure url>`, `<comments>`, `<docs>`, `<cloud>` | `<author>` / `<dc:creator>` names, e-mail addresses, `@handles` |
+| Atom `<id>` (a URL) and `<atom:link rel="self">` | `<managingEditor>` / `<webMaster>`, `<copyright>` |
+| any `http(s)`, `ftp` or `mailto` URL, any `www.` host or bare domain inside a title or summary | the source URLs themselves — provenance survives as the source name |
+| HTML anchors, scripts and all other source markup | tracking identifiers and any source-supplied metadata |
+
+The channel is equally bare: no `<link>`, no `<generator>` and no `<docs>`, so the document
+that leaves the building fingerprints nothing about the host.
+
+`GET /stenella/api/aggregate` serves the same sanitised item set as JSON, for stenella's own
+views and exports.
+
+Operationally the fetcher is deliberately boring and resilient:
+
+- sources are fetched **concurrently**, each with a timeout, one retry and a 4 MiB body cap;
+- the merge is de-duplicated by headline, sorted **newest first**, capped per source and
+  **cached for five minutes**, so a shared URL is not a way to hammer the wires;
+- a source that fails is skipped and reported on the JSON twin (with its URL redacted), and
+  if **every** source fails the previous result is still served — a shared feed should not go
+  empty because one wire is down.
+
+The source set is configuration, not code. `STELLENA_RSS_SOURCES` is a comma-separated list of
+`Name=URL` pairs; when it is unset the five sources above are used:
+
+```sh
+STELLENA_RSS_SOURCES='CBC World=https://www.cbc.ca/webfeed/rss/rss-world' ./stenella-server
+```
+
+> Operator note: CBC's WAF drops requests whose `User-Agent` carries a contact URL or a
+> multi-word comment, so the fetcher sends the bare token `stenella/1.0`. Leave it bare or CBC
+> silently stops contributing.
+
 ### 2. Processing — normalise, de-duplicate, classify, enrich
 
 After collection, each item is processed (again as an atp function, so it can be re-run):
@@ -474,9 +536,11 @@ The design rule is the same as atp's: **the platform is imported and expanded, n
 ```text
 stenella/                     # this module (superproject)
 ├── main.go                   # flags; builds the atp server; mounts stenella's functions
+├── rss.go                    # collection (implemented): fetch/parse/sanitise + the shareable combined feed
+├── rss_test.go               # its tests
 ├── atp/                      # submodule — the embedded platform (song/pod/shepherd)
 ├── collections/              # tasking: sources, groups, rules per collection
-├── feed/                     # source fetch + RSS/RDF/Atom/JSON parsing + combined output
+├── feed/                     # the staged home for the feed package (rss.go is the implemented collector)
 ├── process/                  # normalise, de-duplicate, classify, entity/place extraction
 ├── graph/                    # items, entities, links, comments, notes
 ├── search/                   # metadata search (server) + content search (browser)
@@ -495,24 +559,29 @@ transitively `pod`, `shepherd`, `song`), replaced by their submodule worktrees.
 
 ```sh
 # build one binary
-go build -o stenella-server ./main.go
+go build -o stenella-server .
 
-# run it
-STENELLA_SECRET='a-master-secret-at-least-32-bytes-long!!' \
-  ./stenella-server --root ./data --port 8084
+# run it (the master secret must be at least 32 bytes)
+./stenella-server \
+  --addr :8084 \
+  --root ./data \
+  --secret 'a-master-secret-at-least-32-bytes-long!!'
+
+# then read the shareable combined feed
+curl -s http://localhost:8084/stenella/feeds/all.xml
 ```
 
 Flags (env fallbacks in parentheses):
 
-| Flag | Default | Purpose |
-|---|---|---|
-| `--port` | `8084` | listen port |
-| `--root` | `./data` | shared data root (atp stores, pod records, feeds, links, shares) |
-| `--secret` | *(required)* `$STENELLA_SECRET` | platform secret (≥ 32 bytes): vault key + token signing |
-| `--admin-user` / `--admin-pass` | `admin` | atp operator credentials (a warning is logged if unset) |
-| `--public-base` | `""` | absolute base URL for share links |
-| `--allow-outbound` | `false` | permit outbound fetches beyond configured sources (off by default) |
-| `--map-tiles` | `""` | optional external tile base URL; empty = offline base map |
+| Flag | Env | Default | Purpose |
+|---|---|---|---|
+| `--addr` | `$ATP_ADDR` | `:8080` | listen address (`host:port`) |
+| `--root` | `$ATP_ROOT` | `./data` | shared data root (atp stores, pod records, hosted app, vault) |
+| `--secret` | `$ATP_SECRET` | *(required)* | master secret, **at least 32 bytes**: vault key, pod encryption key and shepherd's signing key |
+
+The combined feed's source set is environment configuration, not a flag:
+`$STELLENA_RSS_SOURCES` (see [the feed section](#the-combined-feed-that-can-be-shared--implemented)),
+and `$STELLENA_<NAME>_KEY` (`newsapi`, `twitter`, `shodan`) supplies optional source credentials.
 
 ---
 
@@ -521,10 +590,10 @@ Flags (env fallbacks in parentheses):
 One static binary plus a data directory. Cross-compiles to any Go target:
 
 ```sh
-GOOS=linux GOARCH=amd64 go build -o stenella-server ./main.go
+GOOS=linux GOARCH=amd64 go build -o stenella-server .
 ```
 
-Terminate TLS at a front proxy (Caddy, nginx) and forward to `--port`. Media and WebAssembly
+Terminate TLS at a front proxy (Caddy, nginx) and forward to `--addr`. Media and WebAssembly
 are served by atp with correct types and range support; the security headers (CSP, nosniff,
 HSTS, permissions, COOP/COEP) come from atp's header manager, so there is nothing to configure
 per deployment. A container image is a two-line `Dockerfile` around the binary.
@@ -539,12 +608,14 @@ go vet ./...
 go test ./...
 ```
 
-The behaviour this document specifies is delivered in stages: the launch stage ships this
-specification, the embedded **atp** submodule and the repository scaffolding; the Go packages
-(`collections`, `feed`, `process`, `graph`, `search`, `rules`, `views`, `web`) and their
-atp-registered functions are the contract they implement. Where this document names atp, song,
-pod or shepherd behaviour, those details are already implemented and tested inside the
-submodule — see [`atp/README.md`](atp/README.md).
+The behaviour this document specifies is delivered in stages. Delivered already: the embedded
+**atp** submodule, the repository scaffolding, and **collection** — `rss.go` fetches, parses,
+sanitises and merges the configured sources and serves the shareable combined feed described
+in [Collection](#the-combined-feed-that-can-be-shared--implemented), with tests in
+`rss_test.go`. The remaining Go packages (`collections`, `feed`, `process`, `graph`, `search`,
+`rules`, `views`, `web`) and their atp-registered functions are the contract they implement.
+Where this document names atp, song, pod or shepherd behaviour, those details are already
+implemented and tested inside the submodule — see [`atp/README.md`](atp/README.md).
 
 ---
 

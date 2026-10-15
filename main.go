@@ -94,6 +94,15 @@ func main() {
 	must(srv.Handle("GET", "/stenella/api/links", state.listLinks))
 	must(srv.Handle("GET", "/stenella/api/insights", state.insights))
 	must(srv.Handle("GET", "/stenella/api/stats", state.stats))
+
+	// --- collection: the shareable combined feed ---------------------------
+	// One URL, many sources, no links and no private elements. Configured from
+	// STELLENA_RSS_SOURCES ("Name=URL,Name=URL") or the built-in source list.
+	agg := newAggregator(rssSources(), nil, 5*time.Minute)
+	must(srv.Handle("GET", "/stenella/feeds/all.xml", agg.serveRSS))
+	must(srv.Handle("GET", "/stenella/api/aggregate", agg.serveJSON))
+	log.Printf("stenella: combined feed on /stenella/feeds/all.xml from %d sources", len(agg.Sources()))
+
 	must(srv.Handle("GET", "/api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"platform": "atp", "app": "stenella", "ok": true})
 	}))
