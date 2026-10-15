@@ -1,0 +1,47 @@
+# Binaries for programs and plugins (anchored to the repo root: a bare "stenella"
+# pattern would be harmless here, but anchoring keeps git from ever treating a
+# source directory named stenella/ as an artifact)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/stenella
+/stenella.exe
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.out
+
+# Dependency directories
+vendor/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
