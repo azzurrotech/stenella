@@ -278,9 +278,11 @@ func TestParseFeedRDF(t *testing.T) {
 	}
 }
 
-func TestParseFeedRejectsHTML(t *testing.T) {
+// A 404 page is not an empty feed: it has to report an error so the source is
+// marked broken rather than "quiet today".
+func TestParseFeedRejectsHTMLPageWithoutItems(t *testing.T) {
 	if _, err := parseFeed([]byte(htmlNotAFeed)); err == nil {
-		t.Fatal("expected an error for an HTML page")
+		t.Fatal("expected an error for an HTML page carrying no items")
 	}
 }
 

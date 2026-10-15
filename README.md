@@ -38,10 +38,12 @@ A running stenella is **one Go binary**. Start it, point a browser at it, and yo
 - **subscribes to sources** — RSS 2.0, RSS 1.0 (RDF), Atom, JSON Feed, and ordinary web pages —
   and **merges them into a single, de-duplicated, newest-first feed**;
 - **models every item as a first-class record** in a graph you own, so you can draw **links**
-  between items (and to external URLs), attach **comments** and **notes**, and **group** items
-  into collections and tags;
-- **searches** across that graph — by metadata always, and by content where you have unlocked
-  the content key in your browser;
+  between items, attach **comments** and **notes**, and **group** items into collections and
+  tags;
+- **searches** across that graph over the record's own metadata — free text over the title,
+  summary and source, plus precise operators for source, collection, category, entity, date
+  range and a **hashed** guid/link (so an item can be found from a link without the link ever
+  being stored);
 - **runs rule sets** over the graph to produce **insights** — the step that turns raw
   information into intelligence;
 - shows all of it through four coordinated views (dashboard, feed/timeline, map, information
@@ -61,16 +63,20 @@ their sources and their notes; a shared link is a capability token, not a login.
 
 atp is *"imported, not just run"*. stenella takes that seriously in two directions:
 
-- **stenella uses atp.** It builds one `*atp.Server` (`atp.New`), mounts it as middleware
-  (`srv.Middleware(next)`), registers its own serverless functions on it
-  (`srv.Handle(method, pattern, fn)`), and reaches the embedded services through the server it
+- **stenella uses atp.** It builds one `*atp.Server` (`atp.New`) and serves it directly — the
+  server *is* the `http.Handler` — registering its own serverless functions on it
+  (`srv.Handle(method, pattern, fn)`), and reaching the embedded services through the server it
   was handed (`srv.Secrets()`, `srv.Pod()`, `srv.Song()`, `srv.Shepherd()`, `srv.Head()`,
-  `srv.Headers()`). Nothing here is a fork of atp.
-- **other software uses stenella.** Because a running stenella is itself an `http.Handler`, it
-  can be **embedded** the same way atp can: mounted under a prefix of a larger Go server, or
-  adopted with `srv.Middleware`-style delegation, and extended by registering additional
-  **sources**, **rule sets** and **views** in Go. The OSINT platform is therefore also the
-  reference application for building *anything* on atp.
+  `srv.Headers()`). Putting it behind a larger router is the host's choice, via
+  `srv.Middleware(next)`. Nothing here is a fork of atp.
+- **other software uses stenella.** Embedding follows the same shape as atp. A host creates the
+  platform (`atp.New`), registers the hosted application, hands the server to stenella
+  (`stenella.NewApp(srv)`) and calls `Register()`, which mounts every stenella function on the
+  registry. The result is the host's own `http.Handler`; to place it under a prefix, or behind
+  a proxy, hand it to `srv.Middleware(next)` exactly as atp documents. Sources, groups and rule
+  sets are **records** — data added at runtime through the API — while new fetchers, extractors
+  and views are **Go functions** registered the same way. The OSINT platform is therefore also
+  the reference application for building *anything* on atp.
 
 ### Purpose 2 — the OSINT platform (the more important purpose)
 
@@ -125,11 +131,11 @@ stenella's pipeline *is* the intelligence cycle, named the same way:
 
 | Cycle stage | stenella stage | Where it lives |
 |---|---|---|
-| Preparation / tasking | a **collection** ("the question"): sources, groups, rules | `stenella/collections` records |
-| Collection | **aggregate** RSS/Atom/JSON/pages into one feed | `feed` package + fetch functions |
-| Processing | **normalise, de-duplicate, classify, extract** entities/places | `process` package |
-| Analysis & Production | **links, comments, notes, groups, search**, then **rules → insights** | `graph`, `search`, `rules` packages |
-| Dissemination | dashboard, timeline, map, tree, exports, shares | `views` + atp hosting/shares |
+| Preparation / tasking | a **collection** ("the question"): sources, groups, rules | `model.go` / `store.go` records |
+| Collection | **aggregate** RSS/Atom/JSON/pages into one feed | `rss.go` + `page.go` |
+| Processing | **normalise, de-duplicate, classify, extract** entities/places | `pipeline.go` |
+| Analysis & Production | **links, comments, notes, groups, search**, then **rules → insights** | `handlers.go`, `search.go`, `insights.go` |
+| Dissemination | dashboard, timeline, map, tree, exports, shares | `search.go` exports + `web/` views + atp hosting/shares |
 
 The cycle is **iterative**: an insight can spawn a new collection; a new source re-runs the
 rules; every stage is observable and re-runnable.
@@ -164,11 +170,11 @@ atp is embedded, not re-implemented. Each atp surface does one job for stenella:
 | atp surface | atp API | what stenella uses it for |
 |---|---|---|
 | server | `atp.New(atp.Options{…})`, `srv.Middleware(next)` | the whole HTTP surface; mounted in-process and embeddable by a host |
-| function registry | `srv.Handle(method, pattern, fn)` | fetchers, processors, rule evaluation, geocoding, exports — all as serverless functions bound to verbs + endpoints |
-| secrets vault | `srv.Secrets()` | feed credentials, API tokens and share keys — server-side only, never rendered into the page |
+| function registry | `srv.Handle(method, pattern, fn)` | fetchers, processors, rule evaluation, exports — all as serverless functions bound to verbs + endpoints |
+| secrets vault | `srv.Secrets()` | operator secrets. The console lists **names and notes only** and never reads a value; stenella does not yet read source credentials from the vault |
 | pod | `srv.Pod()` | the record store: sources, items, links, comments, notes, groups, rules, insights |
 | song | `srv.Song()` | static hosting, server-side templates and the head/Web-Component injection for the views |
-| shepherd | `srv.Shepherd()` | identity-free capability tokens for share links and operator sessions |
+| shepherd | `srv.Shepherd()` | identity-free capability tokens: one token per share, issued, verified and revocable |
 | head manager | `srv.Head()` | one place that injects the PWA manifest, OpenSearch document, preload hints and per-view fragments |
 | header manager | `srv.Headers()` | the security/privacy/performance header policy for every response |
 
@@ -188,9 +194,15 @@ A **source** is a URL plus a kind and a schedule:
 kind: feed | page | dataset      # feed → RSS2/RSS1(RDF)/Atom/JSON Feed; page → generic extraction
 url:  https://example.org/feed.xml
 collection: elections-2026        # the group / tasking this source serves
-every: 15m                        # fetch cadence (fetcher is an atp function)
+every: 15m                        # the cadence to record (see the note below)
 acl:  public | private | protected
 ```
+
+`every` is **recorded** on the source and shown in the console; stenella has no background
+scheduler, so collection is **triggered** — `POST /stenella/api/run` for every enabled source,
+or `POST /stenella/api/sources/{id}` with `{"action":"fetch"}` for one. A cron, a systemd timer
+or the operator decides when that happens, which keeps the server's outbound behaviour an
+explicit operator act.
 
 The four collection methodologies the discipline names are all covered by these kinds:
 **social-media intelligence** and **search-engine data mining/scraping** arrive as feeds or as
@@ -199,26 +211,30 @@ matching** is deliberately out of scope — matching and verification run agains
 import yourself, never against a third-party data broker.
 
 Fetching and parsing are **atp serverless functions**, so they are registered, observable and
-replaceable:
+replaceable. atp's registry allows exactly one trailing `{name}` segment, so a sub-action is a
+`POST` to the resource carrying an `action`, not a deeper path:
 
 ```go
-srv.Handle("POST", "/api/sources/{id}/fetch", stenella.FetchSource)
-srv.Handle("POST", "/api/collections/{id}/refresh", stenella.RefreshCollection)
+srv.Handle("POST", "/stenella/api/sources/{id}",         stenella.SourceAction)   // action: fetch | enable | disable | delete
+srv.Handle("POST", "/stenella/api/collections/{id}",     stenella.CollectionAction) // action: refresh
+srv.Handle("POST", "/stenella/api/run",                  stenella.RunAll)
 ```
 
 Parsing is **baseline Go**: `encoding/xml` for RSS/RDF/Atom and `encoding/json` for JSON Feed —
-no third-party parser. Every fetched item is normalised to one shape (title, summary, body,
-author, link, guid, categories, published, fetched, source, collection) and **merged into a
-single combined feed** that is both a page and a machine-readable document:
+no third-party parser. Every fetched item is normalised to one shape — title, summary, body,
+categories, published, fetched, source, collection, plus the one-way `linkHash`/`guidHash` used
+for identity — and **merged into a single combined feed** that is both a page and a
+machine-readable document:
 
 ```text
-/feeds/{collection}.xml     # the aggregated RSS/Atom any reader can subscribe to
-/feeds/{collection}.json    # the same items as JSON for the app and for exports
+/stenella/feeds/{collection}.xml     # the aggregated RSS 2.0 any reader can subscribe to
+/stenella/feeds/{collection}.json    # the same items as JSON for the app and for exports
 ```
 
-**De-duplication** is by stable identity (guid, then canonical link, then a content hash), so
-the same story from five wires collapses to one item with **five source attributions** — the
-first step from information toward intelligence.
+**De-duplication** is by stable identity: guid hash first, then canonical-link hash, then
+content (title) hash. When the same story appears on five wires it collapses to one item with
+**five source attributions** — the first step from information toward intelligence. All of
+these identities are one-way hashes, so the link and guid themselves are never stored.
 
 #### The combined feed that can be shared — implemented
 
@@ -291,8 +307,9 @@ After collection, each item is processed (again as an atp function, so it can be
 - **Classify** — assign the `acl` class, categories and any configured labels.
 - **Extract** — pull **entities** (people, organisations, places, handles, keywords) and
   **coordinates** where the item carries them, into the graph.
-- **Link** — create candidate links (shared entities, near-duplicate content, explicit
-  references) for the analyst to accept, reject or extend.
+- **Link** — create candidate links for the analyst to accept, reject or extend. The proposal
+  rule is deliberately simple and explainable: two items that share an entity become a proposed
+  edge labelled *"shares an entity"* with `origin: auto`.
 
 The distinguishing claim of the source categories above holds here too: this is processing, not
 conclusions. Nothing becomes an *insight* until a rule says so.
@@ -301,27 +318,35 @@ conclusions. Nothing becomes an *insight* until a rule says so.
 
 An analyst's work is captured as records, not as browser state:
 
-- **Links** — typed, directed edges between two items, or between an item and an external URL:
-  `relation` (e.g. `supports`, `contradicts`, `duplicates`, `references`, `follows`),
-  a `label`, and who drew it. Links are how "associations between entities" become explicit.
-- **Comments** — threaded, attributable annotations on an item, a link, a group or an insight.
-- **Notes** — free-form analyst notes, attachable to anything recorded, kept with the
-  collection they belong to so a later reader knows *why* something mattered.
+- **Links** — typed, directed edges **between two items**: `relation` (`supports`,
+  `contradicts`, `duplicates`, `references`, `related`), an `origin` (`auto` | `human`) and a
+  free note. Links are how "associations between entities" become explicit. They are kept as
+  item-to-item records and never carry a URL, which is what keeps every export link-free.
+- **Comments** — attributable annotations on an item: a body, an author token and a timestamp.
+- **Notes** — free-form analyst notes, optionally attached to an item or an entity (the
+  `subject` field), tagged, and time-stamped. Insights are promoted into notes.
 
 Automatic candidate links (from processing) and human links live in the same table with an
 `origin` field (`auto` | `human`), so an analyst can always see which is which.
 
 ### 4. Grouping and search
 
-- **Groups** (collections, tags, saved queries) organise items without moving them. An item may
-  belong to many groups; a group may be a fixed list, a rule ("everything matching X"), or a
-  manual selection.
-- **Search** is two-layered:
-  - **Server-side**, over **envelope metadata** — source, collection, category, author, link
-    host, guid, date range, and any extracted entity. This is always available and needs no key.
-  - **Client-side**, over **content** — because bodies are stored **encrypted at rest** (pod's
-    optional encryption, unwrapped by the browser with the collection's content key), full-text
-    search over decrypted text runs in the browser and never sends plaintext to the server.
+- **Groups** are saved queries (and watchlists): a name, a metadata query, tags and a colour.
+  They organise items without moving them — "membership" is whatever the query matches, so a
+  group stays current as new items arrive. A group is a rule ("everything matching X"), not a
+  fixed hand-picked list.
+- **Search** is server-side and needs no key. One query language answers:
+  - **free text** over the item's **title, summary and source**;
+  - `tag:` / `label:`, `source:` / `feed:`, `collection:`, `entity:` (by resolved name),
+    `acl:`, `from:` / `to:` (dates), and
+  - `guid:<value>` and `link:<url>`, matched as **hashes** — so an item can be found from a link
+    or guid without the platform ever storing either.
+
+  The query language also recognises `author:` and `host:`, but neither an author nor a link
+  host is stored anywhere (see [the sanitisation table](#the-combined-feed-that-can-be-shared--implemented)),
+  so they are **reported back as unanswerable** in the search response's `notes` rather than
+  silently ignored. There is no client-side content search: the platform keeps no browser-held
+  content key.
 
 ### 5. Insight rules
 
@@ -330,74 +355,94 @@ An **insight** is a conclusion produced by a **rule set** evaluated over the gra
 editable in the UI), evaluated by an atp function:
 
 ```text
+rule "multi-source corroboration":
+  when  >= 2 items from >= 2 distinct sources
+        within the window (optional)
+  then  insight severity=medium  "Independently corroborated reporting"
+        cite  the matched items and their sources
+rule "supply-chain activity":
+  when  any tag in {supply-chain, vendor}
+  then  insight severity=high  "Supply-chain reporting"
 rule "cross-source convergence":
-  when  3 items from >= 2 distinct sources
-        mention entity "Acme Corp"
-        within 48h
-  then  insight severity=watch  "Acme Corp activity cluster"
-        cite  the matched items and links
-rule "contradiction":
-  when  two items are linked relation=contradicts
-  then  insight severity=review  "Conflicting reports"  cite both items
-rule "new place":
-  when  an item's place is not in any prior item of the collection
-  then  insight severity=note  "First mention of <place>"
+  when  entity "Acme Corp"
+        >= 3 items from >= 2 distinct sources within 48h
+  then  insight severity=high  "Acme Corp activity cluster"
 ```
 
-Each insight **cites** the items, links and rule that produced it and carries a **severity** and
-a **timestamp**, so an analyst can triage, dismiss with a reason, or promote it to a note. Rules
-are the part most worth extending, so the rule schema is deliberately small (match conditions +
-aggregate + thresholds) and the engine is a normal Go package:
+A rule's conditions are **tags** (all, or any), **sources** and **entities**, plus a time
+**window** and the thresholds **minItems** / **minSources**. The engine is deliberately small
+and explainable — which is also its current limit: there is no condition over a link's
+relation, and no "first mention of a place" state, so rules of that shape are not expressible
+today.
+
+Each insight **cites** the items, sources and rule that produced it and carries a **severity**
+(`info` | `low` | `medium` | `high` | `critical`) and a **timestamp**, so an analyst can
+triage, dismiss with a reason, or promote it to a note. Rules are the part most worth
+extending, and the engine is a normal Go package behind the usual registry entries:
 
 ```go
-srv.Handle("POST", "/api/rules", stenella.CreateRule)
-srv.Handle("POST", "/api/rules/{id}/run", stenella.RunRule)
-srv.Handle("GET", "/api/insights", stenella.ListInsights)
+srv.Handle("POST", "/stenella/api/rules",       stenella.CreateRule)   // also GET, and {id} with action: run
+srv.Handle("GET",  "/stenella/api/insights",    stenella.ListInsights) // {id} POST with action: dismiss | promote | reopen
 ```
 
 ### 6. Dissemination
 
 Output leaves stenella as:
 
-- a **combined feed** (RSS/Atom/JSON) per collection;
-- **exports** — JSON and CSV of items, links, insights and citations;
+- a **combined feed** (RSS 2.0 and its JSON twin) per collection, and `all` for the union;
+- **exports** — a **JSON** and a **CSV** of the sanitised item projection (entities, places,
+  categories, comment counts), plus the combined feed and a printable briefing;
 - a **timeline** and an **information tree** an analyst can read and screenshot;
-- a **share** — a shepherd capability token that grants read-only access to one item, one
-  group or one insight, revocable and rate-limited.
+- a **share** — a shepherd capability token that grants read-only access to one **item, group,
+  insight or collection**, issued with a TTL and **revocable** (`POST /stenella/api/revoke`);
+  it is not rate-limited.
 
 ---
 
 ## The information model
 
-Everything is a pod record in the collection's namespace; every record is a plain XML file you
-can read. The model is intentionally small and graph-shaped:
+Everything is a pod record in the collection's namespace; each record is **one plain XML file**
+you can read. The model is intentionally small and graph-shaped:
 
-| Record | Is | Key fields (envelope) | Optional ciphertext |
-|---|---|---|---|
-| `source` | a subscribed origin | kind, url, collection, schedule, acl | credentials |
-| `item` | one gathered piece of information | id, source, link, guid, author, categories, published, fetched, acl, place, bytes | `title_enc`, `summary_enc`, `content_enc` |
-| `entity` | a person/org/place/handle/keyword | id, kind, name, resolved coordinates (optional) | — |
-| `link` | a typed edge | from, to_kind, to_id/to_url, relation, label, origin, created_by | — |
-| `comment` | an annotation | on (record ref), author token, created_at | `body_enc` |
-| `note` | analyst free text | on, collection, created_at | `body_enc` |
-| `group` | a collection / tag / saved query | id, name, kind, predicate | — |
-| `rule` | a rule set | id, name, conditions, window, severity | — |
-| `insight` | a rule-produced conclusion | id, rule, severity, created_at, citations | — |
+| Record | Is | Fields |
+|---|---|---|
+| `source` | a subscribed origin | id, name, url, kind, collection, reliability (A–F), acl, enabled, every |
+| `item` | one gathered piece of information | id, source, collection, title, summary, body, categories, acl, **linkHash**, **guidHash**, contentHash, attributions, entities, geo, published, fetched |
+| `entity` | a person/org/place/handle/keyword | id, kind, name, count, items |
+| `link` | a typed edge between two items | id, from, to, relation, origin, note, created |
+| `comment` | an annotation on an item | id, item, author (the analyst), body, created |
+| `note` | analyst free text | id, subject (item or entity), title, body, tags |
+| `group` | a saved query / watchlist | id, name, query, tags, colour |
+| `rule` | a rule set | id, name, text, severity, window, tags, sources, entities, matchAll, minItems, minSources |
+| `insight` | a rule-produced conclusion | id, rule, title, text, severity, items, sources, count, status, reason, noteId |
 
-The split that matters is **envelope vs ciphertext**: only envelope fields are indexed, so
-grouping, filtering, metadata search and rule matching never require reading plaintext. Where a
-collection's content key is unlocked in the browser, the encrypted title/summary/body/comment/note
-fields are decrypted **client-side**. This follows atp's model: encrypted at rest, and the server
-stores what it is given.
+Two refinements of the "normalised item" shape are worth naming, because they are what makes
+the rest of the document's guarantees hold:
+
+- The source's **`link` and `guid` are reduced to one-way hashes** (`linkHash`, `guidHash`) at
+  collection time. De-duplication still collapses a story by "guid, then canonical link, then a
+  content hash", but nothing stenella stores — or serves, even through pod's own record
+  endpoint — carries the link itself. The author is treated the same way: it is a **private
+  element**, so only its presence is noted, never its value.
+- The record store is **plain XML by default**. The platform (atp/pod) offers optional at-rest
+  encryption via the `Encrypt` option — the master secret already derives a pod key — but
+  stenella runs with it **off**, so every record stays a readable file (the transparency claim
+  below). Turn it on in `atp.Options` if a deployment needs it; the record shape does not
+  change.
 
 ---
 
 ## Views
 
-All four views are server-side-rendered from `go:embed`-ed templates and enhanced with baseline
-JavaScript. They share one head fragment (managed by `srv.Head()`) and one data source (the
-collection's records via the JSON endpoints), and each is deep-linkable and offline-capable as
-part of the PWA.
+All four views live inside one **embedded shell** (`web/index.html` plus `web/app.css`,
+`web/app.js`, `web/lib.js`) that the server hosts as static assets. Their **content is rendered
+client-side** from the JSON endpoints — the four `#view-*` sections are regions of that one
+shell, not Go `html/template`s. They share one head fragment (managed by `srv.Head()`), one data
+source (the collection's records) and one **hash router**, so each view is deep-linkable
+(`#/map?…`, `#/search?q=…`) and the whole app is offline-capable as part of the PWA. The router
+and the data-shaping logic (query building, chart aggregation, the projection, the tree builder)
+are deliberately DOM-free in `web/lib.js` so they are unit-tested under Node; `app.js` owns only
+the DOM.
 
 ### The dashboard view
 
@@ -429,16 +474,14 @@ RSS reader would get.
 
 Items and entities that carry coordinates are placed on a **map**:
 
-- the base map is rendered from a bundled, offline **world outline** drawn with inline SVG or
-  `<canvas>` (an equirectangular projection), so the default view makes **no external request**
-  and leaks nothing;
-- markers are items/entities; clustering groups nearby points; clicking a marker opens the item
-  and its links;
-- an **optional** richer base (tiles from a geocoder/tile server the operator configures) can be
-  enabled explicitly; it is off by default because it is an outbound call and a privacy decision
-  (see [Ethics](#ethics-legality-and-privacy));
-- coordinates come from the item itself when present, or from a **geocoding function** the
-  operator may enable.
+- the base map is drawn on a **`<canvas>`** from a **bundled, offline world outline**
+  (`web/world.js`, an equirectangular projection), so the view makes **no external request** and
+  leaks nothing;
+- markers are items that carry coordinates; **clustering** groups nearby points and averages
+  their position; clicking a marker opens the item;
+- there is **no tile layer and no geocoder**: coordinates come only from what the item itself
+  carried — an explicit `lat,lon`, or a place name recognised by the **offline gazetteer** built
+  into extraction. Nothing about an item's geography ever leaves the server.
 
 ### The information tree view
 
@@ -451,12 +494,15 @@ for exporting a branch as a citation-ready outline.
 
 The smaller tools an analyst expects, all baseline:
 
-- a **search bar** (metadata server-side; content client-side when unlocked) with saved queries;
-- **tags** and **watchlists** (a watchlist is a rule set plus an alert);
+- a **search bar** (server-side query language) with queries saved as **groups**;
+- **tags** and **watchlists** — a watchlist is a saved query that stays current as items
+  arrive (there is no separate alert or notification channel);
 - an **insights inbox** with severity triage, dismiss-with-reason and promote-to-note;
 - **OPML import/export** for bulk source management;
-- **exports** — JSON/CSV, the combined feed, and a printable briefing of a collection;
-- **accessibility and comfort** — keyboard navigation, dark mode, responsive layout, offline.
+- **exports** — JSON and CSV of the sanitised item set, the combined feed, and a **printable
+  briefing** of a collection;
+- **accessibility and comfort** — semantic, focusable markup, light/dark via
+  `prefers-color-scheme`, a responsive layout, and offline operation.
 
 ---
 
@@ -482,8 +528,10 @@ it:
 
 - **Provenance is always attached.** Every item carries its source(s); every insight cites the
   items, links and rule that produced it.
-- **Source reliability is recorded, not assumed.** A source can be graded; grading is visible
-  wherever its items appear, and rules can weight by it.
+- **Source reliability is recorded, not assumed.** Each source carries an Admiralty-style grade
+  (A–F), visible in the Sources view and the operator console. Rules cannot yet weight by it
+  (their conditions are tags, sources and entities), and the grade is not repeated on every
+  item.
 - **Cross-source corroboration is measurable.** Because duplicates collapse with all their
   attributions, and entities are shared, "one source vs many" is queryable.
 - **Human judgement is kept.** Auto-links and auto-insights are labelled `auto` and can be
@@ -500,7 +548,7 @@ ethical principles the sources name are design constraints here:
 |---|---|
 | **Legal boundaries** | passive collection only; no authentication bypass, no engagement, no dark-web clients |
 | **Avoid harm** | no doxxing features; no aggregation of personal data beyond what a source published; no automated action against a subject |
-| **Privacy** | identity-free; no reader tracking; content encrypted at rest; the base map and all analytics are offline by default |
+| **Privacy** | identity-free; no reader tracking; no outbound analytics or third-party calls (the base map, charts and search are all local); the pod store can be encrypted at rest through atp's `Encrypt` option, off by default so records stay readable |
 | **Integrity & accuracy** | provenance and citations on every insight; auto vs human marked; dismissal requires a reason |
 | **Purpose limitation** | work is scoped to a **collection** ("the question"); exports and shares are the analyst's explicit act |
 | **Transparency & accountability** | every record is a readable file; rules are visible data; access is via revocable capability tokens, not silent accounts |
@@ -523,9 +571,9 @@ registered on the embedded atp server, or a record type in pod:
 | add an entity extractor | register an extractor function; it emits `entity` records |
 | add a rule vocabulary | add condition/comparison kinds to the rule engine package |
 | add an insight kind | emit an `insight` record with its citations from a rule |
-| add a view | add a template + a JSON endpoint; it is a PWA route like the others |
+| add a view | add a `#view-*` section + router entry in `web/` and a JSON endpoint; it is a PWA route like the others |
 | change storage | swap the pod table set; the model is records, not a fixed schema |
-| embed in other software | mount stenella as an `http.Handler`, or use it as the reference for mounting atp |
+| embed in other software | build the `atp.Server`, `stenella.NewApp(srv).Register()` it, and serve the server (itself an `http.Handler`, optionally through `srv.Middleware`) |
 
 The design rule is the same as atp's: **the platform is imported and expanded, not forked.**
 
@@ -535,19 +583,30 @@ The design rule is the same as atp's: **the platform is imported and expanded, n
 
 ```text
 stenella/                     # this module (superproject)
-├── main.go                   # flags; builds the atp server; mounts stenella's functions
-├── rss.go                    # collection (implemented): fetch/parse/sanitise + the shareable combined feed
-├── rss_test.go               # its tests
-├── atp/                      # submodule — the embedded platform (song/pod/shepherd)
-├── collections/              # tasking: sources, groups, rules per collection
-├── feed/                     # the staged home for the feed package (rss.go is the implemented collector)
-├── process/                  # normalise, de-duplicate, classify, entity/place extraction
-├── graph/                    # items, entities, links, comments, notes
-├── search/                   # metadata search (server) + content search (browser)
-├── rules/                    # rule engine → insights
-├── views/                    # dashboard, feed/timeline, map, tree (+ their templates)
-├── web/                      # HTTP layer: page routes, JSON APIs, shares
-└── static/                   # baseline CSS + JS (charts, map, tree, app shell helpers)
+├── main.go                   # flags; builds the atp server; registers the app
+├── app.go                    # the App type, the route table, default sources + rules
+├── model.go                  # source · item · entity · link · comment · note · group · rule · insight
+├── store.go                  # the pod-backed record layer (tables, CRUD, queries)
+├── rss.go                    # collection: fetch/parse/sanitise/merge + the shareable feed
+├── page.go                   # the HTML-page source kind (parsePage)
+├── pipeline.go               # processing: normalise, de-duplicate, classify, extract, propose links
+├── geo.go                    # the offline gazetteer and coordinate recognition
+├── search.go                 # the query language, exports, OPML, shares
+├── insights.go               # the rule engine → insights
+├── handlers.go               # the item/link/comment/note/group/rule/insight endpoints
+├── api.go                    # source & collection endpoints, counts, health
+├── console.go                # the atp console surfaces
+├── http.go                   # request helpers, JSON/error writing, sanitising
+├── codec.go, util.go         # small shared helpers
+├── web/                      # the baseline front end (embedded; served by atp)
+│   ├── index.html, app.css   #   the shell and the four view regions
+│   ├── app.js                #   the DOM: rendering, filter/chart/canvas, event wiring
+│   ├── lib.js                #   DOM-free logic (router, query, charts, map, tree) — Node-tested
+│   ├── world.js              #   the bundled offline world outline
+│   ├── icon.svg              #   the app icon
+│   └── tests/                #   Node tests for lib.js/world.js (never served)
+├── *_test.go                 # the Go test suite
+└── atp/                      # submodule — the embedded platform (song/pod/shepherd)
 ```
 
 `go.mod` is `require`-free apart from the embedded platform modules (`azzurrotech/atp`, and
@@ -580,8 +639,9 @@ Flags (env fallbacks in parentheses):
 | `--secret` | `$ATP_SECRET` | *(required)* | master secret, **at least 32 bytes**: vault key, pod encryption key and shepherd's signing key |
 
 The combined feed's source set is environment configuration, not a flag:
-`$STELLENA_RSS_SOURCES` (see [the feed section](#the-combined-feed-that-can-be-shared--implemented)),
-and `$STELLENA_<NAME>_KEY` (`newsapi`, `twitter`, `shodan`) supplies optional source credentials.
+`$STELLENA_RSS_SOURCES` (a comma-separated `Name=URL` list; see
+[the feed section](#the-combined-feed-that-can-be-shared--implemented)). There is no
+per-provider API-key variable — the configured sources are read without credentials.
 
 ---
 
@@ -605,17 +665,39 @@ per deployment. A container image is a two-line `Dockerfile` around the binary.
 ```sh
 go build ./...
 go vet ./...
-go test ./...
+go test -race ./...
 ```
 
-The behaviour this document specifies is delivered in stages. Delivered already: the embedded
-**atp** submodule, the repository scaffolding, and **collection** — `rss.go` fetches, parses,
-sanitises and merges the configured sources and serves the shareable combined feed described
-in [Collection](#the-combined-feed-that-can-be-shared--implemented), with tests in
-`rss_test.go`. The remaining Go packages (`collections`, `feed`, `process`, `graph`, `search`,
-`rules`, `views`, `web`) and their atp-registered functions are the contract they implement.
-Where this document names atp, song, pod or shepherd behaviour, those details are already
-implemented and tested inside the submodule — see [`atp/README.md`](atp/README.md).
+The front end's DOM-free logic has its own tests, run with Node (no browser, no framework):
+
+```sh
+node --test web/tests/lib.test.js web/tests/world.test.js
+```
+
+The whole platform this document describes is **implemented**: the embedded **atp** submodule,
+the record layer, collection (`rss.go` + `page.go`), processing (`pipeline.go`), analysis and
+search (`handlers.go`, `search.go`), the rule engine (`insights.go`), dissemination, the operator
+console (`console.go`) and the views/PWA (`web/`). Where this document names atp, song, pod or
+shepherd behaviour, those details live and are tested inside the submodule — see
+[`atp/README.md`](atp/README.md).
+
+### Implementation status
+
+This document is the spec; this table is the honest reconciliation of every deliberate deviation
+from it, so nothing here reads as more than it is.
+
+| Area | Status |
+|---|---|
+| Collection, the sanitised feed and its JSON twin, the sanitisation rules | as described |
+| Processing: normalise, de-duplicate, classify, entity + coordinate extraction, candidate links | as described, except candidate links are proposed from **shared entities only** (no near-duplicate or explicit-reference detection) |
+| Analysis: links, comments, notes | Links are **item↔item** (no item→URL link); comments attach to **items** (not links/groups/insights) |
+| Groups, search | Groups are **saved queries**; search is **server-side** over title/summary/source + operators. `author:`/`host:` are recognised but **unanswerable** (neither is stored) and are reported in `notes` |
+| Insight rules | Tags/sources/entities + window + minItems/minSources. No link-relation or place-novelty conditions; no reliability weighting |
+| Dissemination: feed, exports, shares | Exports are the sanitised **item** projection (JSON + CSV); shares are capability tokens targeting item/group/insight/collection, revocable, **not rate-limited** |
+| Views | One embedded **shell** + client-side rendering from the JSON endpoints (not Go templates); the world outline is a **coarse** offline polygon set; there is **no tile layer and no geocoder** |
+| Storage | Readable XML records; pod's optional at-rest encryption is available but **off** (no per-field ciphertext, no browser-held content key) |
+| Scheduling | `every` is recorded per source; collection is **triggered** (no background scheduler) |
+| atp console, PWA plumbing | as described (all atp surfaces are exposed; the manifest, service worker and OpenSearch document are generated per app) |
 
 ---
 

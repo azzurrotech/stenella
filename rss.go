@@ -25,8 +25,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -134,11 +136,20 @@ func rssSources() []rssSource {
 
 // Article is one normalised, sanitised item. It deliberately has no URL field:
 // the shared feed must not be able to carry a link.
+//
+// The three hash fields carry the README's de-duplication identity — guid,
+// then canonical link, then a content hash — in one-way form, so a story can be
+// recognised across sources without the link or guid ever being stored. They are
+// marked json:"-" so they cannot reach the feed or the JSON API.
 type Article struct {
-	Source    string    `json:"source"`
-	Title     string    `json:"title"`
-	Summary   string    `json:"summary,omitempty"`
-	Published time.Time `json:"published"`
+	Source      string    `json:"source"`
+	Title       string    `json:"title"`
+	Summary     string    `json:"summary,omitempty"`
+	Published   time.Time `json:"published"`
+	Categories  []string  `json:"categories,omitempty"`
+	LinkHash    string    `json:"-"`
+	GUIDHash    string    `json:"-"`
+	ContentHash string    `json:"-"`
 }
 
 // ---------------------------------------------------------------------------
@@ -232,11 +243,15 @@ func containsLink(s string) bool {
 // ---------------------------------------------------------------------------
 
 type rssItem struct {
-	Title       string `xml:"title"`
-	Description string `xml:"description"`
-	Content     string `xml:"http://purl.org/rss/1.0/modules/content/ encoded"`
-	PubDate     string `xml:"pubDate"`
-	Date        string `xml:"http://purl.org/dc/elements/1.1/ date"`
+	Title       string   `xml:"title"`
+	Description string   `xml:"description"`
+	Content     string   `xml:"http://purl.org/rss/1.0/modules/content/ encoded"`
+	PubDate     string   `xml:"pubDate"`
+	Date        string   `xml:"http://purl.org/dc/elements/1.1/ date"`
+	GUID        string   `xml:"guid"`
+	Link        string   `xml:"link"`
+	About       string   `xml:"about,attr"` // RSS 1.0 / RDF identity
+	Categories  []string `xml:"category"`
 }
 
 type rssDoc struct {
@@ -251,12 +266,24 @@ type rdfDoc struct {
 	Items   []rssItem `xml:"item"`
 }
 
+type atomCategory struct {
+	Term string `xml:"term,attr"`
+}
+
+type atomLink struct {
+	Href string `xml:"href,attr"`
+	Rel  string `xml:"rel,attr"`
+}
+
 type atomEntry struct {
-	Title     string `xml:"title"`
-	Summary   string `xml:"summary"`
-	Content   string `xml:"content"`
-	Updated   string `xml:"updated"`
-	Published string `xml:"published"`
+	Title      string         `xml:"title"`
+	Summary    string         `xml:"summary"`
+	Content    string         `xml:"content"`
+	Updated    string         `xml:"updated"`
+	Published  string         `xml:"published"`
+	ID         string         `xml:"id"`
+	Links      []atomLink     `xml:"link"`
+	Categories []atomCategory `xml:"category"`
 }
 
 type atomDoc struct {
@@ -265,9 +292,38 @@ type atomDoc struct {
 }
 
 type rawItem struct {
-	Title string
-	Body  string
-	When  time.Time
+	Title      string
+	Body       string
+	When       time.Time
+	GUID       string   // rss <guid>, rdf rdf:about / dc:identifier, atom <id>
+	Link       string   // rss/rdf <link>, atom rel="alternate"
+	Categories []string // feed categories / atom terms
+}
+
+// atomAlternate picks the entry's alternate link, falling back to the first
+// link of any relation when a feed omits rel.
+func atomAlternate(links []atomLink) string {
+	for _, l := range links {
+		if strings.EqualFold(strings.TrimSpace(l.Rel), "alternate") {
+			return l.Href
+		}
+	}
+	for _, l := range links {
+		if strings.TrimSpace(l.Href) != "" {
+			return l.Href
+		}
+	}
+	return ""
+}
+
+func atomTerms(cats []atomCategory) []string {
+	out := make([]string, 0, len(cats))
+	for _, c := range cats {
+		if t := strings.TrimSpace(c.Term); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 var dateLayouts = []string{
@@ -296,8 +352,44 @@ func parseDate(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// parseFeed accepts RSS 2.0, RSS 1.0/RDF and Atom, and returns the raw items.
+// parseFeed accepts RSS 2.0, RSS 1.0/RDF, Atom, JSON Feed and HTML pages, and
+// returns the raw items. Parsing is baseline Go: encoding/xml for the XML
+// formats, encoding/json for JSON Feed and stdlib regexp for a page, with no
+// third-party parser. The page reader is only tried once every feed format has
+// already been rejected.
 func parseFeed(data []byte) ([]rawItem, error) {
+	trimmed := bytes.TrimSpace(data)
+
+	// JSON Feed is the only accepted format whose first byte is '{'.
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var jf jsonFeed
+		if err := json.Unmarshal(trimmed, &jf); err == nil && jf.Items != nil {
+			out := make([]rawItem, 0, len(jf.Items))
+			for _, it := range jf.Items {
+				when, _ := parseDate(it.DatePublished)
+				if when.IsZero() {
+					when, _ = parseDate(it.DateModified)
+				}
+				body := it.ContentText
+				if strings.TrimSpace(body) == "" {
+					body = it.Summary
+				}
+				if strings.TrimSpace(body) == "" {
+					body = it.ContentHTML
+				}
+				out = append(out, rawItem{
+					Title:      it.Title,
+					Body:       body,
+					When:       when,
+					GUID:       it.ID,
+					Link:       it.URL,
+					Categories: it.Tags,
+				})
+			}
+			return out, nil
+		}
+	}
+
 	var rss rssDoc
 	if err := xml.Unmarshal(data, &rss); err == nil && rss.XMLName.Local == "rss" {
 		out := make([]rawItem, 0, len(rss.Channel.Items))
@@ -310,7 +402,14 @@ func parseFeed(data []byte) ([]rawItem, error) {
 			if strings.TrimSpace(body) == "" {
 				body = it.Content
 			}
-			out = append(out, rawItem{Title: it.Title, Body: body, When: when})
+			out = append(out, rawItem{
+				Title:      it.Title,
+				Body:       body,
+				When:       when,
+				GUID:       it.GUID,
+				Link:       it.Link,
+				Categories: it.Categories,
+			})
 		}
 		return out, nil
 	}
@@ -327,7 +426,18 @@ func parseFeed(data []byte) ([]rawItem, error) {
 			if strings.TrimSpace(body) == "" {
 				body = it.Content
 			}
-			out = append(out, rawItem{Title: it.Title, Body: body, When: when})
+			link := it.Link
+			if strings.TrimSpace(link) == "" {
+				link = it.About
+			}
+			out = append(out, rawItem{
+				Title:      it.Title,
+				Body:       body,
+				When:       when,
+				GUID:       it.About,
+				Link:       link,
+				Categories: it.Categories,
+			})
 		}
 		return out, nil
 	}
@@ -344,12 +454,45 @@ func parseFeed(data []byte) ([]rawItem, error) {
 			if strings.TrimSpace(body) == "" {
 				body = e.Content
 			}
-			out = append(out, rawItem{Title: e.Title, Body: body, When: when})
+			out = append(out, rawItem{
+				Title:      e.Title,
+				Body:       body,
+				When:       when,
+				GUID:       e.ID,
+				Link:       atomAlternate(e.Links),
+				Categories: atomTerms(e.Categories),
+			})
 		}
 		return out, nil
 	}
 
-	return nil, errors.New("unrecognised feed format (not RSS 2.0, RSS 1.0/RDF or Atom)")
+	// The fifth collection format: an HTML page. Every feed shape has failed to
+	// parse by this point, so nothing here can steal a document from a parser
+	// that understood it — a page is only reached when the bytes are not a feed.
+	if items, err := parsePage(data); err == nil && len(items) > 0 {
+		return items, nil
+	}
+
+	return nil, errors.New("unrecognised feed format (not RSS 2.0, RSS 1.0/RDF, Atom, JSON Feed or an HTML page)")
+}
+
+// jsonFeed is the subset of JSON Feed v1.x stenella consumes.
+type jsonFeed struct {
+	Version string         `json:"version"`
+	Title   string         `json:"title"`
+	Items   []jsonFeedItem `json:"items"`
+}
+
+type jsonFeedItem struct {
+	ID            string   `json:"id"`
+	URL           string   `json:"url"`
+	Title         string   `json:"title"`
+	ContentText   string   `json:"content_text"`
+	ContentHTML   string   `json:"content_html"`
+	Summary       string   `json:"summary"`
+	DatePublished string   `json:"date_published"`
+	DateModified  string   `json:"date_modified"`
+	Tags          []string `json:"tags"`
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +508,10 @@ type aggregator struct {
 	maxBody   int64
 	perSource int
 	attempts  int
+
+	// sig identifies the source set this aggregator was built for, so the app
+	// can rebuild it when the configured sources change.
+	sig string
 
 	mu    sync.RWMutex
 	cache []Article
@@ -525,14 +672,18 @@ func (a *aggregator) fetch(ctx context.Context, s rssSource) ([]Article, error) 
 	return nil, lastErr
 }
 
-// fetchOnce performs a single request/parse pass for one source.
-func (a *aggregator) fetchOnce(ctx context.Context, s rssSource) ([]Article, error) {
+// getFeedOnce performs one HTTP request and parses it into raw items. It is the
+// single point where a source is actually contacted, so both the shared feed
+// (which sanitises the result) and the collection pipeline (which needs the
+// original text to extract entities and coordinates) share one implementation,
+// one timeout policy and one body cap.
+func (a *aggregator) getFeedOnce(ctx context.Context, s rssSource) ([]rawItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml, */*")
+	req.Header.Set("Accept", "application/rss+xml, application/atom+xml, application/json, application/xml, text/xml, */*")
 	req.Header.Set("Accept-Language", "en-CA,en;q=0.9,it;q=0.8,fr;q=0.7")
 
 	resp, err := a.client.Do(req)
@@ -547,7 +698,36 @@ func (a *aggregator) fetchOnce(ctx context.Context, s rssSource) ([]Article, err
 	if err != nil {
 		return nil, err
 	}
-	raw, err := parseFeed(data)
+	return parseFeed(data)
+}
+
+// FetchRaw pulls one source and returns its raw items, retrying a transient
+// failure. The items are unsanitised: the collection pipeline extracts
+// entities, handles and coordinates from the original wording, and sanitises
+// each field as it stores it.
+func (a *aggregator) FetchRaw(ctx context.Context, s rssSource) ([]rawItem, error) {
+	attempts := a.attempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		raw, err := a.getFeedOnce(ctx, s)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+// fetchOnce performs a single request/parse pass for one source, and sanitises
+// the result into the shared Article shape.
+func (a *aggregator) fetchOnce(ctx context.Context, s rssSource) ([]Article, error) {
+	raw, err := a.getFeedOnce(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -558,12 +738,26 @@ func (a *aggregator) fetchOnce(ctx context.Context, s rssSource) ([]Article, err
 		if title == "" {
 			continue
 		}
-		items = append(items, Article{
-			Source:    s.Name,
-			Title:     title,
-			Summary:   sanitizeText(r.Body, maxSummary),
-			Published: r.When,
-		})
+		it := Article{
+			Source:      s.Name,
+			Title:       title,
+			Summary:     sanitizeText(r.Body, maxSummary),
+			Published:   r.When,
+			ContentHash: shortHash(titleKey(title)),
+		}
+		if g := strings.TrimSpace(r.GUID); g != "" {
+			it.GUIDHash = shortHash(g)
+		}
+		if l := strings.TrimSpace(r.Link); l != "" {
+			it.LinkHash = shortHash(canonicalLink(l))
+		}
+		for _, c := range r.Categories {
+			if c = sanitizeText(c, 60); c != "" {
+				it.Categories = append(it.Categories, c)
+			}
+		}
+		it.Categories = uniqueStrings(it.Categories)
+		items = append(items, it)
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Published.After(items[j].Published) })
 	if a.perSource > 0 && len(items) > a.perSource {
