@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stenella — OSINT platform</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f7f9;--fg:#16181d;--card:#fff;--line:#e4e7ec;--accent:#0a84ff;--good:#12b76a;--warn:#f79009}
+@media (prefers-color-scheme:dark){:root{--bg:#101216;--fg:#e8eaee;--card:#191c21;--line:#2a2f36}}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:1.4rem 2rem;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.5rem}
+h1{margin:0;font-size:1.25rem}
+main{padding:1.5rem 2rem;display:grid;gap:1.25rem}
+.cards{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.1rem}
+.card .n{font-size:1.8rem;font-weight:650}
+.card .l{opacity:.7;font-size:.85rem;text-transform:uppercase;letter-spacing:.05em}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.25rem}
+h2{margin:.1rem 0 .75rem;font-size:.95rem;text-transform:uppercase;letter-spacing:.05em;color:var(--accent)}
+.item{display:flex;gap:.75rem;padding:.6rem 0;border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item .src{font-size:.75rem;background:rgba(127,127,127,.16);padding:.1rem .4rem;border-radius:4px;height:fit-content;white-space:nowrap}
+.item a{color:var(--accent);text-decoration:none;font-weight:560}
+.item a:hover{text-decoration:underline}
+.tag{font-size:.72rem;border:1px solid var(--line);border-radius:99px;padding:.05rem .45rem;opacity:.85;margin-left:.35rem}
+.muted{opacity:.65;font-size:.88rem}
+.verdict{font-size:.75rem;border-radius:99px;padding:.1rem .5rem;background:var(--warn);color:#1b1200;font-weight:650}
+.verdict.attention{background:#f04438;color:#fff}
+p.err{color:#f04438}
+</style>
+</head>
+<body>
+<header>
+<h1>stenella</h1>
+<span class="muted">open-source intelligence · hosted on atp</span>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>Aggregated feed</h2>
+    <div id="feed"><p class="muted">loading…</p></div>
+  </section>
+
+  <section>
+    <h2>Rule-based insights</h2>
+    <div id="insights"><p class="muted">loading…</p></div>
+  </section>
+
+  <section>
+    <h2>Links</h2>
+    <div id="links"><p class="muted">loading…</p></div>
+  </section>
+</main>
+<script>
+async function json(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(path + ' → ' + res.status);
+  return res.json();
+}
+
+function card(n, label) {
+  return '<div class="card"><div class="n">' + n + '</div><div class="l">' + label + '</div></div>';
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function loadStats() {
+  try {
+    const s = await json('/stenella/api/stats');
+    document.getElementById('cards').innerHTML =
+      card(s.items, 'items') + card(Object.keys(s.feeds || {}).length, 'feeds') +
+      card(s.links, 'links') + card(s.rules, 'rules');
+  } catch (e) { fail('stats', e); }
+}
+
+async function loadFeed() {
+  try {
+    const data = await json('/stenella/api/feeds');
+    const items = (data.items || []).slice().sort((a, b) => (b.seen || '').localeCompare(a.seen || ''));
+    document.getElementById('feed').innerHTML = items.map(it =>
+      '<div class="item"><span class="src">' + esc(it.feed) + '</span><div>' +
+      '<a href="' + esc(it.url) + '" rel="noreferrer noopener">' + esc(it.title) + '</a>' +
+      (it.summary ? '<div class="muted">' + esc(it.summary) + '</div>' : '') +
+      (it.tags || []).map(t => '<span class="tag">' + esc(t) + '</span>').join('') +
+      '</div></div>').join('') || '<p class="muted">no items yet</p>';
+  } catch (e) { fail('feed', e); }
+}
+
+async function loadInsights() {
+  try {
+    const data = await json('/stenella/api/insights');
+    const rows = data.insights || [];
+    document.getElementById('insights').innerHTML = rows.map(r =>
+      '<div class="item"><span class="verdict ' + esc(r.verdict) + '">' + esc(r.verdict) + '</span><div>' +
+      esc(r.text) + '<div class="muted">' + r.count + ' item(s): ' + (r.items || []).map(esc).join(', ') +
+      '</div></div></div>').join('') || '<p class="muted">no rule matched</p>';
+  } catch (e) { fail('insights', e); }
+}
+
+async function loadLinks() {
+  try {
+    const data = await json('/stenella/api/links');
+    const rows = data.links || [];
+    document.getElementById('links').innerHTML = rows.map(l =>
+      '<div class="item"><span class="src">' + esc(l.kind) + '</span><div>' +
+      esc(l.from) + ' → ' + esc(l.to) +
+      (l.note ? '<div class="muted">' + esc(l.note) + '</div>' : '') +
+      '</div></div>').join('') || '<p class="muted">no links</p>';
+  } catch (e) { fail('links', e); }
+}
+
+function fail(where, err) {
+  document.getElementById(where) &&
+    (document.getElementById(where).innerHTML = '<p class="err">could not load ' + where + '</p>');
+  console.error(where, err);
+}
+
+loadStats(); loadFeed(); loadInsights(); loadLinks();
+</script>
+</body>
+</html>
