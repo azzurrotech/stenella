@@ -21,7 +21,7 @@
       if (k === "class") n.className = v;
       else if (k === "text") n.textContent = v;
       else if (k === "html") n.innerHTML = v; // only ever fed by escapeHTML()
-      else if (k.startsWith("on") && typeof v === "function") n.addEventListener(k.slice(2), v);
+      else if (k.startsWith("on") && typeof v === "function") n.addEventListener(S.domEventName(k), v);
       else if (k === "dataset") for (const d of Object.keys(v)) n.dataset[d] = v[d];
       else n.setAttribute(k, v);
     }
@@ -33,6 +33,83 @@
   }
 
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  // gid returns a unique, stable DOM id for a generated control. The id is
+  // derived from the control's kind and the record it belongs to (see
+  // S.actionId), so it is the same across repaints and can always be addressed;
+  // a numeric suffix is only appended if that id is already in the document, so
+  // two controls can never share an id.
+  function gid(kind, key) {
+    const base = S.actionId(kind, key);
+    let id = base;
+    for (let n = 2; document.getElementById(id); n++) id = base + "-" + n;
+    return id;
+  }
+
+  // inlineError shows a failure inside the card that owns the control. stenella
+  // reports errors inline rather than with window.alert, because a host page that
+  // embeds the app in a sandboxed frame (or an installed PWA) suppresses dialogs.
+  function inlineError(host, err) {
+    let box = Array.prototype.find.call(host.children, (c) => c.dataset && c.dataset.inline === "1");
+    if (!box) {
+      box = el("span", { class: "err", role: "alert", dataset: { inline: "1" } });
+      host.appendChild(box);
+    }
+    box.textContent = err && err.message ? err.message : String(err);
+  }
+
+  // simpleAction adds a generated button (with a unique id) that runs fn and
+  // reports any failure inline instead of with a modal dialog.
+  function simpleAction(host, kind, key, label, title, fn) {
+    host.appendChild(el("button", {
+      type: "button", id: gid(kind, key), text: label, title: title || "",
+      onClick: async () => { try { await fn(); } catch (e) { inlineError(host, e); } },
+    }));
+  }
+
+  // openAction opens an inline form inside the action bar. The actions must never
+  // depend on window.prompt/confirm: inside a sandboxed <iframe> (no
+  // allow-modals), in a PWA, or once a browser has suppressed further dialogs,
+  // prompt() returns null and the control would silently do nothing. fields is a
+  // list of {name,label,type,value,placeholder,rows,options}; submit(values) is
+  // awaited and any error is shown in the card. onOpen(form) is an optional
+  // async callback that runs after the form is inserted (e.g. to populate a select).
+  function openAction(bar, kind, key, fields, submit, onOpen) {
+    const open = bar.querySelector(".act-form");
+    if (open) open.remove();
+    const form = el("form", { class: "act-form", id: gid("form-" + kind, key) });
+    for (const f of fields) {
+      const id = gid("field-" + kind + "-" + f.name, key);
+      let ctrl;
+      if (f.type === "textarea") {
+        ctrl = el("textarea", { id: id, name: f.name, rows: f.rows || 2, placeholder: f.placeholder || "", value: f.value || "" });
+      } else if (f.type === "select") {
+        ctrl = el("select", { id: id, name: f.name });
+        for (const o of f.options || []) ctrl.appendChild(el("option", { value: o, text: o }));
+        ctrl.value = f.value || (f.options || [""])[0];
+      } else {
+        ctrl = el("input", { id: id, name: f.name, type: f.type || "text", value: f.value || "", placeholder: f.placeholder || "", size: f.size || 22 });
+      }
+      form.appendChild(el("label", { class: "act-label" }, el("span", { text: f.label }), ctrl));
+    }
+    const status = el("span", { class: "err", role: "alert", id: gid("status-" + kind, key) });
+    form.appendChild(el("button", { type: "submit", class: "primary", id: gid("save-" + kind, key), text: "Save" }));
+    form.appendChild(el("button", { type: "button", id: gid("cancel-" + kind, key), text: "Cancel", onClick: () => form.remove() }));
+    form.appendChild(status);
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      status.textContent = "";
+      const values = {};
+      for (const f of fields) values[f.name] = String(form.elements[f.name].value).trim();
+      try { await submit(values); }
+      catch (e) { status.textContent = e && e.message ? e.message : String(e); }
+    });
+    bar.appendChild(form);
+    if (onOpen) onOpen(form);
+    const first = form.querySelector("input, textarea, select");
+    if (first) first.focus();
+    return form;
+  }
 
   function badge(text, cls) { return el("span", { class: "badge " + (cls || ""), text: text }); }
 
@@ -280,6 +357,9 @@
 
   // --- the timeline --------------------------------------------------------
 
+  // The link relations the platform accepts (mirrors the server's model).
+  const RELATIONS = ["related", "supports", "contradicts", "duplicates", "references"];
+
   function itemBadges(it) {
     const out = [el("span", { class: "badge source", text: it.source || "(unknown)" })];
     if (it.collection && it.collection !== "all") out.push(badge(it.collection));
@@ -291,37 +371,65 @@
     return out;
   }
 
+  // itemActions builds the action bar on a feed/search card. Every button carries
+  // a unique generated id (act-comment-item-<id>, …) and opens an inline form —
+  // no browser dialogs, so the actions keep working when stenella is embedded.
   function itemActions(it, rerender) {
     const acts = el("div", { class: "acts" });
-    acts.appendChild(el("button", { type: "button", text: "Comment", onClick: async () => {
-      const body = window.prompt("Comment on this item:");
-      if (!body) return;
-      try { await post("/stenella/api/comments", { item: it.id, body, author: "analyst" }); rerender(); }
-      catch (e) { window.alert(e.message); }
-    } }));
-    acts.appendChild(el("button", { type: "button", text: "Note", onClick: async () => {
-      const title = window.prompt("Note title:");
-      if (!title) return;
-      const body = window.prompt("Note body:") || "";
-      try { await post("/stenella/api/notes", { subject: it.id, title, body }); rerender(); }
-      catch (e) { window.alert(e.message); }
-    } }));
-    acts.appendChild(el("button", { type: "button", text: "Link", onClick: async () => {
-      const to = window.prompt("Link to which item id?");
-      if (!to) return;
-      const relation = window.prompt("Relation (supports | contradicts | duplicates | references | related):", "related") || "related";
-      try { await post("/stenella/api/links", { from: it.id, to, relation }); rerender(); }
-      catch (e) { window.alert(e.message); }
-    } }));
-    acts.appendChild(el("button", { type: "button", text: "Track", title: "Save a group that tracks this item's source", onClick: async () => {
-      const name = window.prompt("Group name:", (it.source || "source") + " watch");
-      if (!name) return;
-      const q = S.queryFromFilters({ source: it.source, category: (it.categories || [])[0] || "" });
-      try { await post("/stenella/api/groups", { name, query: q }); rerender(); }
-      catch (e) { window.alert(e.message); }
-    } }));
-    acts.appendChild(el("a", { href: "#/map?item=" + encodeURIComponent(it.id), text: "Map" }));
-    acts.appendChild(el("a", { href: "#/tree?item=" + encodeURIComponent(it.id), text: "Tree" }));
+    const key = it.id;
+    const action = (kind, label, title, fields, submit, onOpen) => {
+      acts.appendChild(el("button", {
+        type: "button", id: gid(kind, key), text: label, title: title,
+        onClick: () => openAction(acts, kind, key, fields, submit, onOpen),
+      }));
+    };
+
+    action("comment", "Comment", "Write a comment on this item",
+      [{ name: "body", label: "Comment", type: "textarea", rows: 2, placeholder: "your comment" }],
+      async (v) => {
+        if (!v.body) throw new Error("a comment needs a body");
+        await post("/stenella/api/comments", { item: it.id, body: v.body, author: "analyst" });
+        rerender();
+      });
+
+    action("note", "Note", "Attach a note to this item",
+      [{ name: "title", label: "Title", placeholder: "note title" },
+       { name: "body", label: "Body", type: "textarea", rows: 2, placeholder: "note body" }],
+      async (v) => {
+        if (!v.title) throw new Error("a note needs a title");
+        await post("/stenella/api/notes", { subject: it.id, title: v.title, body: v.body });
+        rerender();
+      });
+
+    action("link", "Link", "Link this item to another",
+      [{ name: "to", label: "To item", type: "select", placeholder: "select an item…" },
+       { name: "relation", label: "Relation", type: "select", value: "related", options: RELATIONS }],
+      async (v) => {
+        if (!v.to) throw new Error("give the item id to link to");
+        await post("/stenella/api/links", { from: it.id, to: v.to, relation: v.relation || "related" });
+        rerender();
+      },
+      async (form) => {
+        // Populate the "to" select with all items except the current one
+        const items = (await api("/stenella/api/items?limit=1000")).items || [];
+        const select = form.elements["to"];
+        for (const item of items) {
+          if (item.id === it.id) continue;
+          select.appendChild(el("option", { value: item.id, text: item.title || item.id }));
+        }
+      });
+
+    action("track", "Track", "Save a group that tracks this item's source",
+      [{ name: "name", label: "Group name", value: (it.source || "source") + " watch" }],
+      async (v) => {
+        if (!v.name) throw new Error("give the group a name");
+        const q = S.queryFromFilters({ source: it.source, category: (it.categories || [])[0] || "" });
+        await post("/stenella/api/groups", { name: v.name, query: q });
+        rerender();
+      });
+
+    acts.appendChild(el("a", { id: gid("map", key), href: "#/map?item=" + encodeURIComponent(it.id), text: "Map" }));
+    acts.appendChild(el("a", { id: gid("tree", key), href: "#/tree?item=" + encodeURIComponent(it.id), text: "Tree" }));
     return acts;
   }
 
@@ -359,6 +467,21 @@
   // --- the map -------------------------------------------------------------
 
   let mapItems = [];
+  let mapItemPoints = []; // individual item positions (unclustered)
+  let mapClusters = [];
+  let selectedCluster = null;
+  let mapLinks = []; // all links for drawing lines
+
+  // layoutMap computes both clustered and individual positions. Keeping
+  // clustering out of drawMap means a repaint (e.g. to highlight a selection)
+  // cannot replace the cluster objects and lose which one is selected.
+  function layoutMap() {
+    const cv = $("map");
+    mapClusters = S.cluster(S.geoPoints(mapItems, cv.width, cv.height), 26);
+    // Also compute individual points for drawing links and per-item dots
+    mapItemPoints = S.geoPoints(mapItems, cv.width, cv.height);
+    if (mapClusters.indexOf(selectedCluster) < 0) selectedCluster = null;
+  }
 
   function drawMap() {
     const cv = $("map");
@@ -397,16 +520,65 @@
       ctx.stroke();
     }
 
-    // markers, clustered so a dense map stays readable
-    const clusters = S.cluster(S.geoPoints(mapItems, w, h), 26);
-    mapClusters = clusters;
-    for (const c of clusters) {
+    // Build a map from item id to its point for link drawing
+    const pointById = new Map();
+    for (const p of mapItemPoints) pointById.set(p.item.id, p);
+
+    // Draw link lines between connected items
+    if (mapLinks.length > 0) {
+      ctx.strokeStyle = "rgba(10,132,255,.35)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      for (const link of mapLinks) {
+        const from = pointById.get(link.from);
+        const to = pointById.get(link.to);
+        if (from && to) {
+          ctx.beginPath();
+          ctx.moveTo(from.x, from.y);
+          ctx.lineTo(to.x, to.y);
+          ctx.stroke();
+        }
+      }
+      ctx.setLineDash([]);
+    }
+
+    // Draw individual dots for each item (smaller, semi-transparent)
+    ctx.fillStyle = "rgba(240,68,56,.45)";
+    ctx.strokeStyle = "rgba(240,68,56,.7)";
+    ctx.lineWidth = 1;
+    for (const p of mapItemPoints) {
+      const sel = selectedCluster && selectedCluster.items.some((i) => i.id === p.item.id);
+      if (sel) {
+        ctx.fillStyle = "rgba(10,132,255,.85)";
+        ctx.strokeStyle = "rgba(10,132,255,1)";
+      }
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (sel) {
+        ctx.fillStyle = "rgba(240,68,56,.45)";
+        ctx.strokeStyle = "rgba(240,68,56,.7)";
+      }
+    }
+
+    // Draw cluster markers (larger circles showing density) on top
+    for (const c of mapClusters) {
+      const sel = c === selectedCluster;
       const r = Math.min(6 + Math.sqrt(c.count) * 2.2, 18);
+      if (sel) {
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, r + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(10,132,255,.45)";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
       ctx.beginPath();
       ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(240,68,56,.65)";
+      ctx.fillStyle = sel ? "rgba(10,132,255,.85)" : "rgba(240,68,56,.65)";
       ctx.fill();
-      ctx.strokeStyle = "#f04438";
+      ctx.strokeStyle = sel ? "#0a84ff" : "#f04438";
+      ctx.lineWidth = sel ? 3 : 1;
       ctx.stroke();
       if (c.count > 1) {
         ctx.fillStyle = "#fff";
@@ -416,16 +588,30 @@
         ctx.textAlign = "left";
       }
     }
+    ctx.lineWidth = 1;
     ctx.fillStyle = "rgba(127,127,127,.9)";
     ctx.font = "11px system-ui, sans-serif";
-    ctx.fillText(clusters.length + " markers from " + mapItems.filter((i) => i.hasGeo).length + " placed items", 8, h - 8);
+    ctx.fillText(mapClusters.length + " clusters, " + mapItemPoints.length + " items from " + mapItems.filter((i) => i.hasGeo).length + " placed items", 8, h - 8);
+
+    // publish the selection for assistive tech and the browser test
+    if (selectedCluster) {
+      cv.dataset.selectedItems = selectedCluster.items.map((i) => i.id).join(",");
+      cv.dataset.selectedCount = String(selectedCluster.count);
+    } else {
+      delete cv.dataset.selectedItems;
+      delete cv.dataset.selectedCount;
+    }
   }
 
-  let mapClusters = [];
-
+  // selectCluster records the clicked marker, repaints so its circle changes
+  // colour, and fills the info panel.
   function selectCluster(c) {
+    selectedCluster = c;
+    drawMap();
     const box = $("map-info");
     clear(box);
+    box.dataset.items = c.items.map((i) => i.id).join(",");
+    box.dataset.count = String(c.count);
     box.appendChild(el("h3", { text: c.count === 1 ? (c.items[0].title || "(untitled)") : c.count + " items here" }));
     if (c.count === 1) {
       const it = c.items[0];
@@ -441,11 +627,34 @@
     }
   }
 
-  async function loadMap() {
+  // focusItemOnMap selects the cluster that holds `id`, so a "Map" link lands on
+  // the item it names instead of on an unselected map.
+  function focusItemOnMap(id) {
+    if (!id) return false;
+    for (const c of mapClusters) {
+      if (c.items.some((i) => i.id === id)) {
+        selectCluster(c);
+        return true;
+      }
+    }
+    const box = $("map-info");
+    clear(box);
+    box.appendChild(el("p", { class: "muted", text: "this item has no placed location" }));
+    return false;
+  }
+
+  async function loadMap(params) {
     try {
-      const out = await api("/stenella/api/items?" + S.buildQuery({ limit: 1000 }));
+      const [out, linksOut] = await Promise.all([
+        api("/stenella/api/items?" + S.buildQuery({ limit: 1000 })),
+        api("/stenella/api/links"),
+      ]);
       mapItems = out.items || [];
+      mapLinks = linksOut.links || [];
+      selectedCluster = null;
+      layoutMap();
       drawMap();
+      if (params && params.item) focusItemOnMap(params.item);
     } catch (err) {
       showError($("map-info"), err);
     }
@@ -454,11 +663,13 @@
   // --- the information tree ------------------------------------------------
 
   let treeData = null;
+  let treeFocus = "";
 
   function treeNodeEl(node) {
     const kids = node.children || [];
+    const attrs = node.id ? { "data-item-id": node.id } : {};
     if (kids.length === 0) {
-      return el("li", {},
+      return el("li", attrs,
         el("span", { text: node.label }),
         el("span", { class: "kind kind-" + node.kind, text: node.kind }));
     }
@@ -469,7 +680,25 @@
     const ul = el("ul");
     for (const k of kids) ul.appendChild(treeNodeEl(k));
     det.appendChild(ul);
-    return el("li", {}, det);
+    return el("li", attrs, det);
+  }
+
+  // focusTreeItem opens the path down to one item and marks it, so a "Tree" link
+  // lands on the item it names instead of on a folded tree.
+  function focusTreeItem(id) {
+    if (!id) return false;
+    const box = $("tree");
+    let target = null;
+    for (const n of box.querySelectorAll("[data-item-id]")) {
+      if (n.dataset.itemId === id) { target = n; break; }
+    }
+    if (!target) return false;
+    for (let p = target.parentElement; p && p !== box; p = p.parentElement) {
+      if (p.tagName === "DETAILS") p.open = true;
+    }
+    target.setAttribute("data-focus-item", "1");
+    target.scrollIntoView({ block: "nearest" });
+    return true;
   }
 
   function renderTree() {
@@ -481,9 +710,11 @@
     const ul = el("ul");
     for (const n of nodes) ul.appendChild(treeNodeEl(n));
     box.appendChild(ul);
+    if (treeFocus) focusTreeItem(treeFocus);
   }
 
-  async function loadTree() {
+  async function loadTree(params) {
+    treeFocus = (params && params.item) || "";
     try {
       const [sources, groups, items, links, insights] = await Promise.all([
         api("/stenella/api/sources"),
@@ -536,24 +767,29 @@
         }
         const acts = el("div", { class: "acts" });
         if (inx.status !== "dismissed") {
-          acts.appendChild(el("button", { type: "button", text: "Dismiss", onClick: async () => {
-            const reason = window.prompt("Reason for dismissing (required):");
-            if (!reason) return;
-            try { await post("/stenella/api/insights/" + encodeURIComponent(inx.id), { action: "dismiss", reason }); loadInbox(); }
-            catch (e) { window.alert(e.message); }
-          } }));
+          acts.appendChild(el("button", {
+            type: "button", id: gid("dismiss", inx.id), text: "Dismiss",
+            title: "Dismiss this insight (a reason is required)",
+            onClick: () => openAction(acts, "dismiss", inx.id,
+              [{ name: "reason", label: "Reason", placeholder: "why this is dismissed" }],
+              async (v) => {
+                if (!v.reason) throw new Error("a reason is required");
+                await post("/stenella/api/insights/" + encodeURIComponent(inx.id), { action: "dismiss", reason: v.reason });
+                loadInbox();
+              }),
+          }));
         }
         if (inx.status !== "promoted") {
-          acts.appendChild(el("button", { type: "button", text: "Promote to note", onClick: async () => {
-            try { await post("/stenella/api/insights/" + encodeURIComponent(inx.id), { action: "promote" }); loadInbox(); }
-            catch (e) { window.alert(e.message); }
-          } }));
+          simpleAction(acts, "promote", inx.id, "Promote to note", "Promote this insight to a note", async () => {
+            await post("/stenella/api/insights/" + encodeURIComponent(inx.id), { action: "promote" });
+            loadInbox();
+          });
         }
         if (inx.status !== "new") {
-          acts.appendChild(el("button", { type: "button", text: "Reopen", onClick: async () => {
-            try { await post("/stenella/api/insights/" + encodeURIComponent(inx.id), { action: "reopen" }); loadInbox(); }
-            catch (e) { window.alert(e.message); }
-          } }));
+          simpleAction(acts, "reopen", inx.id, "Reopen", "Reopen this insight", async () => {
+            await post("/stenella/api/insights/" + encodeURIComponent(inx.id), { action: "reopen" });
+            loadInbox();
+          });
         }
         card.appendChild(acts);
         box.appendChild(card);
@@ -586,11 +822,14 @@
       if (groups.length === 0) { box.appendChild(el("span", { class: "muted", text: "no saved queries yet" })); return; }
       box.appendChild(el("span", { class: "muted", text: "saved:" }));
       for (const g of groups) {
-        box.appendChild(el("button", { type: "button", text: g.name, title: g.query || "", onClick: () => runSearch(g.query || "") }));
-        box.appendChild(el("button", { type: "button", class: "danger", text: "×", title: "Delete " + g.name, onClick: async () => {
-          try { await api("/stenella/api/groups/" + encodeURIComponent(g.id), { method: "DELETE" }); loadSaved(); }
-          catch (e) { window.alert(e.message); }
-        } }));
+        box.appendChild(el("button", { type: "button", id: gid("query", g.id), text: g.name, title: g.query || "", onClick: () => runSearch(g.query || "") }));
+        box.appendChild(el("button", {
+          type: "button", class: "danger", id: gid("query-del", g.id), text: "×", title: "Delete " + g.name,
+          onClick: async () => {
+            try { await api("/stenella/api/groups/" + encodeURIComponent(g.id), { method: "DELETE" }); loadSaved(); }
+            catch (e) { inlineError(box, e); }
+          },
+        }));
       }
     } catch (err) {
       showError(box, err);
@@ -613,14 +852,14 @@
           el("td", { text: s.lastStatus || "never" }),
           el("td", { text: String(s.lastCount || 0) }),
           el("td", {},
-            el("button", { type: "button", text: s.enabled ? "Disable" : "Enable", onClick: async () => {
+            el("button", { type: "button", id: gid("src-toggle", s.id), text: s.enabled ? "Disable" : "Enable", onClick: async () => {
               try { await post("/stenella/api/sources/" + encodeURIComponent(s.id), { action: s.enabled ? "disable" : "enable" }); loadSources(); }
-              catch (e) { window.alert(e.message); }
+              catch (e) { inlineError(body, e); }
             } }),
             " ",
-            el("button", { type: "button", text: "Fetch", onClick: async () => {
+            el("button", { type: "button", id: gid("src-fetch", s.id), text: "Fetch", onClick: async () => {
               try { await post("/stenella/api/sources/" + encodeURIComponent(s.id), { action: "fetch" }); loadSources(); }
-              catch (e) { window.alert(e.message); }
+              catch (e) { inlineError(body, e); }
             } })));
         body.appendChild(tr);
       }
@@ -664,12 +903,12 @@
       }
       html += "</body></html>";
       const win = window.open("", "_blank");
-      if (!win) { window.alert("Allow pop-ups to print the briefing."); return; }
+      if (!win) { $("run-report").textContent = "allow pop-ups to print the briefing"; return; }
       win.document.write(html);
       win.document.close();
       win.focus();
       win.print();
-    }).catch((err) => window.alert(err.message));
+    }).catch((err) => { $("run-report").textContent = err.message; });
   }
 
   // --- the console ---------------------------------------------------------
@@ -707,22 +946,29 @@
     console: { show: "#view-console", load: loadConsole },
   };
 
-  let currentView = "";
+  let currentKey = "";
 
   function route() {
-    const { view } = S.routeOf(window.location.hash);
+    const { view, params } = S.routeOf(window.location.hash);
     const chosen = VIEWS[view] ? view : "dashboard";
+    // VIEWS[].show holds a CSS selector ("#view-map"), so it must be looked up
+    // with querySelector, not getElementById — otherwise every lookup is null
+    // and no view is ever revealed.
     for (const name of Object.keys(VIEWS)) {
-      const sec = $(VIEWS[name].show);
+      const sec = document.querySelector(VIEWS[name].show);
       if (sec) sec.hidden = name !== chosen;
     }
     for (const a of document.querySelectorAll("nav#views a")) {
       if (a.dataset.view === chosen) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
     }
-    if (chosen !== currentView) {
-      currentView = chosen;
-      VIEWS[chosen].load();
+    // Reload when the parameters change too: a "Map"/"Tree" link is
+    // #/map?item=… / #/tree?item=…, and the view name alone would not change
+    // if the analyst is already on that view.
+    const key = chosen + "?" + S.buildQuery(params);
+    if (key !== currentKey) {
+      currentKey = key;
+      VIEWS[chosen].load(params);
     }
     window.scrollTo(0, 0);
   }
@@ -730,7 +976,20 @@
   // --- wiring --------------------------------------------------------------
 
   function init() {
-    loadFilterOptions().then(loadDashboard);
+    // Preload all views in the background so they're ready when navigated to
+    loadFilterOptions().then(() => {
+      loadDashboard();
+      // Preload remaining views after dashboard renders
+      setTimeout(() => {
+        loadFeed();
+        loadMap({});
+        loadTree({});
+        loadInbox();
+        loadSaved();
+        loadSources();
+        loadConsole();
+      }, 0);
+    });
 
     $("f-apply").addEventListener("click", loadDashboard);
     $("filters").addEventListener("submit", (e) => { e.preventDefault(); loadDashboard(); });
@@ -764,7 +1023,7 @@
     $("tree-export").addEventListener("click", () => {
       const text = S.outlineOf(treeData ? S.treeOf(treeData) : []);
       const win = window.open("", "_blank");
-      if (!win) { window.alert("Allow pop-ups to export the outline."); return; }
+      if (!win) { $("tree-msg").textContent = "allow pop-ups to export the outline"; return; }
       win.document.write("<pre>" + S.escapeHTML(text) + "</pre>");
       win.document.close();
     });
@@ -772,7 +1031,7 @@
     $("inbox-status").addEventListener("change", loadInbox);
     $("inbox-run").addEventListener("click", async () => {
       try { await post("/stenella/api/run", {}); loadInbox(); }
-      catch (e) { window.alert(e.message); }
+      catch (e) { showError($("inbox"), e); }
     });
 
     $("searchbar").addEventListener("submit", (e) => {
@@ -780,24 +1039,33 @@
       window.location.hash = S.hrefFor("search", { q: $("q").value });
       runSearch($("q").value);
     });
-    $("save-query").addEventListener("click", async () => {
-      const name = window.prompt("Name this saved query:");
-      if (!name) return;
-      try { await post("/stenella/api/groups", { name, query: $("q").value }); loadSaved(); }
-      catch (e) { window.alert(e.message); }
+    // Saving a query opens an inline form (never a dialog). The header button is
+    // inside form#searchbar, so its form is attached to the header instead.
+    $("save-query").addEventListener("click", () => {
+      openAction(document.querySelector("header"), "save-query", "header",
+        [{ name: "name", label: "Group name", value: $("q").value }],
+        async (v) => {
+          if (!v.name) throw new Error("give the query a name");
+          await post("/stenella/api/groups", { name: v.name, query: $("q").value });
+          loadSaved();
+        });
     });
     $("search-go").addEventListener("click", () => runSearch($("search-input").value));
-    $("search-save").addEventListener("click", async () => {
-      const name = window.prompt("Name this saved query:");
-      if (!name) return;
-      try { await post("/stenella/api/groups", { name, query: $("search-input").value }); loadSaved(); }
-      catch (e) { window.alert(e.message); }
+    $("search-save").addEventListener("click", () => {
+      openAction($("search-save").parentNode, "save-query", "search",
+        [{ name: "name", label: "Group name", value: $("search-input").value }],
+        async (v) => {
+          if (!v.name) throw new Error("give the query a name");
+          await post("/stenella/api/groups", { name: v.name, query: $("search-input").value });
+          loadSaved();
+        });
     });
 
     $("src-run").addEventListener("click", runCollection);
     $("src-add").addEventListener("submit", async (e) => {
       e.preventDefault();
       const f = new FormData(e.target);
+      const msg = $("src-msg");
       try {
         await post("/stenella/api/sources", {
           name: f.get("name"), url: f.get("url"), kind: f.get("kind"),
@@ -805,8 +1073,9 @@
           acl: "public", enabled: true,
         });
         e.target.reset();
+        $("src-msg").textContent = "added " + f.get("name");
         loadSources();
-      } catch (err) { window.alert(err.message); }
+      } catch (err) { $("src-msg").textContent = err.message; }
     });
     $("opml-import").addEventListener("click", async () => {
       const doc = $("opml").value.trim();

@@ -227,6 +227,26 @@ func TestViewsAndScriptAgreeOnElementIDs(t *testing.T) {
 		}
 	}
 
+	// A router entry's `show` value is a CSS selector ("#view-map"). It must
+	// name a real element, and it must be resolved with querySelector: handing
+	// it to $() (getElementById) silently yields null, which reveals no view.
+	shows := regexp.MustCompile(`show:\s*"(#[^"]+)"`).FindAllStringSubmatch(js, -1)
+	if len(shows) < 8 {
+		t.Fatalf("only %d router show selectors found in app.js", len(shows))
+	}
+	for _, m := range shows {
+		if !defined[strings.TrimPrefix(m[1], "#")] {
+			t.Errorf("router show selector %s matches no element in the shell", m[1])
+		}
+	}
+	// ...and the lookup itself must not go through getElementById.
+	if regexp.MustCompile(`\$\(\s*VIEWS\[[^\]]+\]\.show\s*\)`).MatchString(js) {
+		t.Error("app.js resolves VIEWS[].show (a CSS selector) with $() (getElementById); no view would ever be revealed")
+	}
+	if !regexp.MustCompile(`querySelector\(\s*VIEWS\[[^\]]+\]\.show\s*\)`).MatchString(js) {
+		t.Error("app.js does not reveal views with document.querySelector(VIEWS[name].show)")
+	}
+
 	// the console panels the script renders are real surfaces
 	panelBlock := regexp.MustCompile(`(?s)const PANELS = \[(.*?)\];`).FindStringSubmatch(js)
 	if panelBlock == nil {
@@ -336,6 +356,61 @@ func TestShellHeadIsManagedByATP(t *testing.T) {
 	} {
 		if !strings.Contains(shell, want) {
 			t.Errorf("the served shell does not carry %s, so the PWA plumbing is invisible", want)
+		}
+	}
+}
+
+// The actions on a card must never depend on a browser dialog, and every
+// generated control must carry a unique id. A host page that embeds stenella in
+// a sandboxed <iframe> (no allow-modals), or an installed PWA with dialogs
+// suppressed, makes window.prompt() return null — the old handlers then bailed
+// out on the first line and the button looked dead. The id matters for the same
+// reason it matters to assistive technology: a control with no id cannot be
+// addressed.
+func TestCardActionsUseNoDialogsAndEveryButtonHasAnID(t *testing.T) {
+	srv, _ := webServer(t)
+	_, js := call(t, srv, http.MethodGet, "/stenella/app.js", "")
+	_, lib := call(t, srv, http.MethodGet, "/stenella/lib.js", "")
+
+	// strip comments before looking for dialog calls: the code explains the rule
+	// in prose, and the prose names window.prompt/window.alert.
+	var code strings.Builder
+	for _, line := range strings.Split(js, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		code.WriteString(line)
+		code.WriteString("\n")
+	}
+	src := code.String()
+	for _, forbidden := range []string{"window.prompt(", "window.confirm(", "window.alert("} {
+		if strings.Contains(src, forbidden) {
+			t.Errorf("app.js still calls %s; a suppressed dialog makes the control do nothing when stenella is embedded", forbidden)
+		}
+	}
+
+	// the unique-id helper is exported from lib.js and used for the controls
+	for _, want := range []string{"function actionId(", "function domSafeId("} {
+		if !strings.Contains(lib, want) {
+			t.Errorf("lib.js does not define %s", want)
+		}
+	}
+	if !strings.Contains(lib, "actionId: actionId") || !strings.Contains(lib, "domSafeId: domSafeId") {
+		t.Error("lib.js does not export actionId/domSafeId")
+	}
+	if !strings.Contains(js, "S.actionId(") {
+		t.Error("app.js does not build generated ids with S.actionId")
+	}
+
+	// every el("button", …) the script builds for a list must carry an id
+	built := regexp.MustCompile(`el\("button",\s*\{([^}]*)\}`).FindAllStringSubmatch(js, -1)
+	if len(built) < 5 {
+		t.Fatalf("only %d dynamic button builders found; the parser is probably wrong", len(built))
+	}
+	for _, m := range built {
+		if !strings.Contains(m[1], "id:") {
+			t.Errorf("a generated button has no id: el(\"button\", {%s}", m[1])
 		}
 	}
 }

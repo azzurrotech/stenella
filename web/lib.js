@@ -24,6 +24,35 @@
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC[c]);
   }
 
+  // domEventName turns an el() attribute key like "onClick" into the event name
+  // addEventListener expects. HTML event handler content attributes are not
+  // case-sensitive, but addEventListener's event type is: a listener added as
+  // "Click" never fires, only "click" does. Drop the "on" prefix, lower-case
+  // the rest.
+  function domEventName(key) {
+    const s = String(key == null ? "" : key);
+    return (s.startsWith("on") ? s.slice(2) : s).toLowerCase();
+  }
+
+  // domSafeId makes an arbitrary value safe inside an HTML id attribute: only
+  // letters, digits, "-" and "_" survive. A record id ("item-3f9c…") passes
+  // through unchanged; a value that sanitises to nothing becomes "x".
+  function domSafeId(value) {
+    const s = String(value == null ? "" : value)
+      .replace(/[^A-Za-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return s || "x";
+  }
+
+  // actionId builds a unique, stable element id for a generated control:
+  // actionId("comment", "item-1a2b") === "act-comment-item-1a2b". Deriving the
+  // id from the record the control belongs to makes it both unique per record
+  // and stable across repaints, so a button on a feed card can be addressed by
+  // id in a test or by assistive technology.
+  function actionId(kind, key) {
+    return "act-" + domSafeId(kind) + "-" + domSafeId(key);
+  }
+
   function formatCount(n) {
     const v = Number(n) || 0;
     if (v >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
@@ -226,8 +255,8 @@
 
   // --- the information tree ------------------------------------------------
 
-  function treeNode(label, kind, children) {
-    return { label: label, kind: kind, children: children || [] };
+  function treeNode(label, kind, children, id) {
+    return { label: label, kind: kind, children: children || [], id: id || "" };
   }
 
   // treeOf builds sources → groups → items → entities → links/insights from the
@@ -265,7 +294,7 @@
             children.push(treeNode((l.from === it.id ? l.to : l.from) + " (" + l.relation + ")", "link"));
           }
         }
-        return treeNode(it.title, "item", children);
+        return treeNode(it.title, "item", children, it.id);
       });
       sources.push(treeNode(name, "source", nodes));
     }
@@ -334,6 +363,9 @@
 
   return {
     escapeHTML: escapeHTML,
+    domEventName: domEventName,
+    domSafeId: domSafeId,
+    actionId: actionId,
     formatCount: formatCount,
     timeAgo: timeAgo,
     niceDate: niceDate,

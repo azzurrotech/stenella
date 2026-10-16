@@ -465,10 +465,13 @@ CSS and JavaScript:
 
 The heart of the product: the **combined feed** as a chronological **timeline**, newest first,
 with per-item source attribution, category chips, the collection's acl class, and inline
-indicators for existing links, comments and notes. From here an analyst can open an item, draw
-a link, add a comment or note, add the item to a group, or jump to the same item on the map or
-in the tree. It renders the same data as `/feeds/{collection}.xml`, so what you see is what any
-RSS reader would get.
+indicators for existing links, comments and notes. Every item carries four actions — **Comment**,
+**Note**, **Link** and **Track** — plus **Map** and **Tree** links that jump to that item on the
+map or in the information tree and focus it there. It renders the same data as
+`/feeds/{collection}.xml`, so what you see is what any RSS reader would get.
+
+Every view — and every panel inside a view — is a collapsible `<details>` block, open by default,
+so a long page can be folded down to the section an analyst is working in.
 
 ### The map view
 
@@ -478,7 +481,10 @@ Items and entities that carry coordinates are placed on a **map**:
   (`web/world.js`, an equirectangular projection), so the view makes **no external request** and
   leaks nothing;
 - markers are items that carry coordinates; **clustering** groups nearby points and averages
-  their position; clicking a marker opens the item;
+  their position. Clicking a marker **selects and highlights it** — the selected circle is drawn
+  in the accent colour (distinct from the default red) and stays selected until another is
+  clicked — and identifies the item (or the list of items in that cluster) in the panel beneath
+  the map. A **Map** link from the feed opens the map with that item's marker already selected.
 - there is **no tile layer and no geocoder**: coordinates come only from what the item itself
   carried — an explicit `lat,lon`, or a place name recognised by the **offline gazetteer** built
   into extraction. Nothing about an item's geography ever leaves the server.
@@ -487,8 +493,9 @@ Items and entities that carry coordinates are placed on a **map**:
 
 The tree makes the graph legible: **sources → groups → items → entities → links/insights**,
 collapsible at every level, again in baseline HTML (nested lists) or inline SVG for large
-graphs. It is the view for "how does this item relate to that one", for spotting clusters, and
-for exporting a branch as a citation-ready outline.
+graphs. A **Tree** link from the feed opens the tree with that item's ancestors expanded and the
+node highlighted. It is the view for "how does this item relate to that one", for spotting
+clusters, and for exporting a branch as a citation-ready outline.
 
 ### Other elements
 

@@ -187,6 +187,44 @@ test("annotations counts the analyst's marks per item", () => {
   assert.deepEqual(a.get("i2"), { links: 1, comments: 0, notes: 0 });
 });
 
+test("domEventName lower-cases the event so the listener actually fires", () => {
+  assert.equal(S.domEventName("onClick"), "click");
+  assert.equal(S.domEventName("onChange"), "change");
+  assert.equal(S.domEventName("onSubmit"), "submit");
+  assert.equal(S.domEventName("onKeyDown"), "keydown");
+  // a name that already carries no "on" prefix is still normalised
+  assert.equal(S.domEventName("click"), "click");
+  assert.equal(S.domEventName(""), "");
+  assert.equal(S.domEventName(null), "");
+});
+
+test("domSafeId and actionId make a unique, valid id for every generated control", () => {
+  // record ids pass through unchanged
+  assert.equal(S.domSafeId("item-3f9c0a"), "item-3f9c0a");
+  assert.equal(S.actionId("comment", "item-3f9c0a"), "act-comment-item-3f9c0a");
+  assert.equal(S.actionId("map", "item-1"), "act-map-item-1");
+  // anything that is not id-safe is folded to "-"
+  assert.equal(S.domSafeId("source: CBC news"), "source-CBC-news");
+  assert.equal(S.actionId("save-query", "header"), "act-save-query-header");
+  // a value that sanitises to nothing still yields a legal id
+  assert.equal(S.domSafeId("  "), "x");
+  assert.equal(S.domSafeId(null), "x");
+  // two different controls never collide, and the key alone disambiguates
+  assert.notEqual(S.actionId("comment", "item-1"), S.actionId("note", "item-1"));
+  assert.notEqual(S.actionId("comment", "item-1"), S.actionId("comment", "item-2"));
+});
+
+test("treeOf tags item nodes with their id so the tree can focus one", () => {
+  const tree = S.treeOf({
+    groups: [],
+    items: [{ id: "i1", source: "CBC", title: "First", entities: [] }],
+    links: [],
+    insights: [],
+  });
+  const source = tree.find((n) => n.kind === "source");
+  assert.equal(source.children[0].id, "i1");
+});
+
 test("escapeHTML neutralises text that goes into a document", () => {
   assert.equal(S.escapeHTML('<b>a&"b"</b>'), "&lt;b&gt;a&amp;&quot;b&quot;&lt;/b&gt;");
   assert.equal(S.escapeHTML(null), "");
