@@ -47,7 +47,13 @@ func (a *App) listItems(w http.ResponseWriter, r *http.Request) {
 	// resolve the entity ids on each item so the views can render names
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
-		out = append(out, a.itemView(it))
+		itemData := a.itemView(it)
+		// Add comments and links for each item
+		links, _ := a.store.LinksFor(it.ID)
+		comments, _ := a.store.CommentsFor(it.ID)
+		itemData["links"] = links
+		itemData["comments"] = comments
+		out = append(out, itemData)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": out,
