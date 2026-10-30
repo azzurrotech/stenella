@@ -118,8 +118,33 @@ figcaption { font-size: .78rem; color: var(--muted); text-align: center; padding
   padding: .7rem .9rem;
 }
 .timeline li.selected { border-left-color: var(--warn); }
+/* The record a reference resolves to keeps its place in the stream: it is
+   outlined, not pulled out, so the surrounding records still give it context. */
+.timeline li.focus { border-left-color: var(--accent); box-shadow: 0 0 0 2px rgba(10, 132, 255, .45); }
 .timeline .head { display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; }
 .timeline .title { font-weight: 600; }
+/* A day section is a label, not a record: it must not inherit the card. */
+.timeline li.tl-day { background: none; border: 0; border-radius: 0; padding: .4rem 0 0; }
+.timeline li.tl-day h3 {
+  margin: 0; font-size: .78rem; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted);
+}
+
+/* --- canonical item references ----------------------------------------- */
+/* There is one way to name a record: an .item-link. Whether it appears in a
+   sentence, a tree branch, a map popup or an insight citation, it looks the
+   same and its href is #/timeline?item=…. */
+.item-link { border-bottom: 1px dotted currentColor; }
+.item-link:hover, .item-link:focus-visible { text-decoration: none; border-bottom-style: solid; }
+a.button-link {
+  display: inline-block;
+  font-size: .8rem;
+  padding: .15rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+}
+a.button-link:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 .badges { display: flex; flex-wrap: wrap; gap: .3rem; margin: .3rem 0; }
 .badge {
   font-size: .72rem;
@@ -151,6 +176,38 @@ figcaption { font-size: .78rem; color: var(--muted); text-align: center; padding
 .act-form .act-label { display: flex; align-items: center; gap: .3rem; color: var(--muted); font-size: .8rem; }
 .act-form input, .act-form select, .act-form textarea { font: inherit; font-size: .85rem; padding: .15rem .35rem; }
 .act-form .err { color: var(--bad); font-size: .8rem; flex-basis: 100%; }
+
+/* Annotations on a record: comments, notes and links are the same block on
+   every card, because they are the same records whichever view shows them. */
+.annotations { margin-top: .5rem; padding-top: .35rem; border-top: 1px dashed var(--line); }
+.annotations h4 {
+  margin: .2rem 0;
+  font-size: .76rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+.annotations ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .2rem; font-size: .86rem; }
+.annotations .author { font-weight: 600; }
+.badge.rel-supports { border-color: var(--good); color: var(--good); }
+.badge.rel-contradicts { border-color: var(--bad); color: var(--bad); }
+
+/* The share action appends the capability token inside the action bar. */
+.share {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  align-items: center;
+  font-size: .8rem;
+}
+.share code {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .05rem .35rem;
+  word-break: break-all;
+}
 
 /* --- collapsible sections ---------------------------------------------- */
 /* Every major section is a <details>. The heading stays the summary so the

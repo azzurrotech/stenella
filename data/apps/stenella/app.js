@@ -1,8 +1,15 @@
 // stenella — the views.
 //
 // One baseline script: no framework, no bundler. It owns the DOM; every
-// decision it makes comes from lib.js (window.Stenella), which the tests cover
-// without a browser. Data comes from the platform's JSON endpoints.
+// decision it makes comes from the shared song viewkit (/_song/viewkit.js)
+// plus stenella's own tree/query helpers in lib.js. Data comes from the
+// platform's JSON endpoints.
+//
+// The rule this file keeps: a record is always named the same way. itemLink()
+// is the only renderer for a reference to an item, and it always points at
+// #/timeline?item=… — whether the reference appears in an annotation on
+// another record, in a map cluster, in the information tree or in an insight
+// citation. Following it moves the timeline to that record.
 (function () {
   "use strict";
 
@@ -34,14 +41,7 @@
 
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
-  // currentView tracks which view is active so we can notify it when data changes
-  let currentView = "dashboard";
-
-  // gid returns a unique, stable DOM id for a generated control. The id is
-  // derived from the control's kind and the record it belongs to (see
-  // S.actionId), so it is the same across repaints and can always be addressed;
-  // a numeric suffix is only appended if that id is already in the document, so
-  // two controls can never share an id.
+  // gid returns a unique, stable DOM id for a generated control.
   function gid(kind, key) {
     const base = S.actionId(kind, key);
     let id = base;
@@ -49,9 +49,7 @@
     return id;
   }
 
-  // inlineError shows a failure inside the card that owns the control. stenella
-  // reports errors inline rather than with window.alert, because a host page that
-  // embeds the app in a sandboxed frame (or an installed PWA) suppresses dialogs.
+  // inlineError shows a failure inside the card that owns the control.
   function inlineError(host, err) {
     let box = Array.prototype.find.call(host.children, (c) => c.dataset && c.dataset.inline === "1");
     if (!box) {
@@ -61,8 +59,8 @@
     box.textContent = err && err.message ? err.message : String(err);
   }
 
-  // simpleAction adds a generated button (with a unique id) that runs fn and
-  // reports any failure inline instead of with a modal dialog.
+  // simpleAction adds a generated button that runs fn and reports failures
+  // inline instead of with a modal dialog.
   function simpleAction(host, kind, key, label, title, fn) {
     host.appendChild(el("button", {
       type: "button", id: gid(kind, key), text: label, title: title || "",
@@ -70,13 +68,10 @@
     }));
   }
 
-  // openAction opens an inline form inside the action bar. The actions must never
-  // depend on window.prompt/confirm: inside a sandboxed <iframe> (no
-  // allow-modals), in a PWA, or once a browser has suppressed further dialogs,
-  // prompt() returns null and the control would silently do nothing. fields is a
-  // list of {name,label,type,value,placeholder,rows,options}; submit(values) is
-  // awaited and any error is shown in the card. onOpen(form) is an optional
-  // async callback that runs after the form is inserted (e.g. to populate a select).
+  // openAction opens an inline form inside the action bar. The actions must
+  // never depend on window.prompt/confirm: inside a sandboxed <iframe>, in a
+  // PWA, or once a browser has suppressed further dialogs they would silently
+  // do nothing.
   function openAction(bar, kind, key, fields, submit, onOpen) {
     const open = bar.querySelector(".act-form");
     if (open) open.remove();
@@ -118,8 +113,6 @@
 
   // --- the API -------------------------------------------------------------
 
-  let offline = false;
-
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { Accept: "application/json" } }, opts || {}));
     if (!res.ok) {
@@ -130,7 +123,6 @@
       } catch (e) { /* not JSON */ }
       throw new Error(path + " → " + detail);
     }
-    offline = false;
     if (res.status === 204) return null;
     const text = await res.text();
     return text ? JSON.parse(text) : null;
@@ -156,6 +148,31 @@
     if (!list || list.length === 0) { n.hidden = true; n.textContent = ""; return; }
     n.hidden = false;
     n.textContent = "notes: " + list.join(" · ");
+  }
+
+  // --- the canonical item reference ---------------------------------------
+
+  // itemLink is the only way the client names a record. Every caller — an
+  // annotation, a map popup, a tree branch, an insight citation — gets the
+  // same anchor, class and canonical URL, so "show me this item" means the
+  // same thing everywhere: move the timeline to that record.
+  function itemLink(id, text, cls) {
+    if (!id) return el("span", { class: "muted", text: text || "(unknown)" });
+    return el("a", {
+      class: "item-link" + (cls ? " " + cls : ""),
+      href: S.itemHref("timeline", id),
+      dataset: { itemId: id },
+      title: "Open this record in the timeline",
+      text: text || id,
+    });
+  }
+
+  // titleOf resolves a record's label from the timeline index, falling back to
+  // its id. A link to a record the current collection does not contain still
+  // stays a link: following it will load that record.
+  function titleOf(id) {
+    const it = timelineState.byId.get(id);
+    return it ? (it.title || "(untitled)") : id;
   }
 
   // --- charts (canvas 2D, no library) --------------------------------------
@@ -267,10 +284,14 @@
     });
   }
 
-  // --- dashboard -----------------------------------------------------------
+  // --- shared state --------------------------------------------------------
 
   const dashboardState = { items: [], stats: null, filters: {} };
-  let chartsDrawn = false;
+  const timelineState = { items: [], byId: new Map(), links: [], notes: [], sources: [] };
+  let treeData = null;
+  let treeFocus = "";
+
+  // --- dashboard -----------------------------------------------------------
 
   function currentFilters() {
     return {
@@ -284,8 +305,6 @@
   }
 
   function queryOf(f) {
-    // The source filter is its own parameter when it comes from the dropdown;
-    // a category/date/text filter travels in the metadata query.
     return S.queryFromFilters({ category: f.category, from: f.from, to: f.to, text: f.text });
   }
 
@@ -313,7 +332,26 @@
     barChart($("chart-source"), S.topEntries(agg.bySource, 8));
     lineChart($("chart-time"), S.seriesOfDay(agg.byDay));
     pieChart($("chart-category"), S.topEntries(agg.byCategory, 8));
-    chartsDrawn = true;
+  }
+
+  function renderInsights(insights) {
+    const container = $("inbox");
+    if (!container) return;
+    if (insights.length === 0) {
+      container.innerHTML = "<p class='muted'>No active insights</p>";
+      return;
+    }
+    let html = `<h4>Insights (<span>${insights.length}</span>)</h4><ul class='insights-list'>`;
+    insights.forEach((inx) => {
+      const severityClass = inx.severity || "info";
+      html += `<li class='insight sev-${severityClass}' data-insight-id='${inx.id}'>
+                  <span class='title'>${inx.title || '(untitled)'}</span>
+                  <span class='severity'>${severityClass}</span>
+                  <span class='count'>fires: ${inx.count}</span>
+                </li>`;
+    });
+    html += '</ul>';
+    container.innerHTML = html;
   }
 
   async function loadDashboard() {
@@ -321,19 +359,22 @@
     dashboardState.filters = f;
     const qs = S.buildQuery({ collection: f.collection, source: f.source, q: queryOf(f), limit: 500 });
     try {
-      const [stats, items] = await Promise.all([
+      const [stats, items, insightsOut] = await Promise.all([
         api("/stenella/api/stats"),
         api("/stenella/api/items?" + qs),
+        api("/stenella/api/insights?" + S.buildQuery({ status: "new", limit: 500 })),
       ]);
       dashboardState.stats = stats;
       dashboardState.items = items.items || [];
+      dashboardState.insights = insightsOut.insights || [];
       showNotes(items.notes);
     } catch (err) {
       showError($("kpis"), err);
       return;
     }
     renderKpis();
-    redrawCharts(); // updates the existing canvases in place
+    redrawCharts();
+    renderInsights(dashboardState.insights);
   }
 
   function fillSelect(sel, values, keep) {
@@ -374,9 +415,68 @@
     return out;
   }
 
-  // itemActions builds the action bar on a feed/search card. Every button carries
-  // a unique generated id (act-comment-item-<id>, …) and opens an inline form —
-  // no browser dialogs, so the actions keep working when stenella is embedded.
+  // linksOf merges the per-record links the API already attached with the
+  // timeline's complete link set, deduplicated by id. LinksFor is
+  // bidirectional, so incoming and outgoing edges are both present; the
+  // renderer gives them the same shape.
+  function linksOf(it) {
+    const seen = new Set();
+    const out = [];
+    for (const l of (it.links || []).concat(timelineState.links)) {
+      if (!l || (!l.from && !l.to)) continue;
+      if (l.from !== it.id && l.to !== it.id) continue;
+      const key = l.id || (l.from + "|" + l.to + "|" + (l.relation || ""));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(l);
+    }
+    return out;
+  }
+
+  // renderItemAnnotations is the single annotation renderer: comments, notes
+  // and links. The record-to-renderable-section mapping lives in the shared
+  // song viewkit (S.annotationSections); this function only turns those
+  // sections into DOM. A link always shows the *other* record's title, whether
+  // the edge points at this record or away from it.
+  function renderItemAnnotations(it) {
+    const rec = {
+      id: it.id,
+      comments: it.comments || [],
+      notes: it.notes || [],
+      links: linksOf(it),
+    };
+    const sections = S.annotationSections(rec, {
+      linkTitle: (l, other) => titleOf(other || l.other),
+    });
+
+    return sections.map((section) => {
+      const list = el("ul", { class: section.kind });
+      for (const entry of section.items) {
+        if (section.kind === "links") {
+          list.appendChild(el("li", { class: "link", dataset: { itemId: entry.other } },
+            entry.incoming ? "← " : "→ ",
+            itemLink(entry.other, entry.head),
+            " ",
+            badge((entry.relation || "related") + " · " + (entry.incoming ? "incoming" : "outgoing"),
+              "rel-" + (entry.relation || "related"))));
+          continue;
+        }
+        list.appendChild(el("li", { class: section.kind === "comments" ? "comment" : "note" },
+          el("strong", { text: entry.head }),
+          section.kind === "comments" ? ": " : (entry.body ? " — " : ""),
+          entry.body ? el("span", { class: "body", text: entry.body }) : null,
+          el("span", { class: "muted", text: " " + S.timeAgo(entry.when) })
+        ));
+      }
+      return el("div", { class: "annotations" },
+        el("h4", { text: section.title + " (" + section.count + ")" }),
+        list
+      );
+    });
+  }
+
+  // itemActions builds the action bar on a timeline card. Every button carries
+  // a unique generated id and opens an inline form — no browser dialogs.
   function itemActions(it, rerender) {
     const acts = el("div", { class: "acts" });
     const key = it.id;
@@ -405,15 +505,14 @@
       });
 
     action("link", "Link", "Link this item to another",
-      [{ name: "to", label: "To item", type: "select", placeholder: "select an item…" },
+      [{ name: "to", label: "To item", type: "select" },
        { name: "relation", label: "Relation", type: "select", value: "related", options: RELATIONS }],
       async (v) => {
-        if (!v.to) throw new Error("give the item id to link to");
+        if (!v.to) throw new Error("choose an item to link to");
         await post("/stenella/api/links", { from: it.id, to: v.to, relation: v.relation || "related" });
         rerender();
       },
       async (form) => {
-        // Populate the "to" select with all items except the current one
         const items = (await api("/stenella/api/items?limit=1000")).items || [];
         const select = form.elements["to"];
         for (const item of items) {
@@ -431,57 +530,161 @@
         rerender();
       });
 
-    acts.appendChild(el("a", { id: gid("map", key), href: "#/map?item=" + encodeURIComponent(it.id), text: "Map" }));
-    acts.appendChild(el("a", { id: gid("tree", key), href: "#/tree?item=" + encodeURIComponent(it.id), text: "Tree" }));
+    action("share", "Share", "Issue a revocable capability token for this item",
+      [{ name: "ttl", label: "Valid for", type: "select", value: "168h", options: ["24h", "168h", "720h"] }],
+      async (v) => {
+        const res = await post("/stenella/api/share", { kind: "item", id: it.id, ttl: v.ttl });
+        const box = el("div", { class: "share" },
+          el("span", { class: "muted", text: "share token: " }),
+          el("code", { text: res.token }));
+        acts.appendChild(box);
+      });
+
+    acts.appendChild(el("a", { class: "button-link", id: gid("map", key), href: S.itemHref("timeline", it.id), text: "View in timeline" }));
     return acts;
   }
 
-  // timelineInto renders items into a list. It is shared by the feed, the
-  // search results and the briefing, so every view shows the same record.
+  // timelineInto renders records into a list. The stream, the search hits and
+  // any other item list use it, so every view shows the same record. Day
+  // sections come from the shared song viewkit, so the grouping rule is not
+  // reinvented per view.
   function timelineInto(list, items, rerender) {
     clear(list);
     if (!items.length) {
-      list.appendChild(el("li", { class: "muted", text: "nothing collected yet — run a collection from Sources" }));
+      list.appendChild(el("li", { class: "muted", text: "nothing collected yet — collect from Sources in the timeline" }));
       return;
     }
-    for (const it of items) {
-      list.appendChild(el("li", {},
-        el("div", { class: "head" },
-          el("span", { class: "title", text: it.title || "(untitled)" }),
-          el("span", { class: "muted", text: S.timeAgo(it.published || it.fetched) })),
-        el("div", { class: "badges" }, itemBadges(it)),
-        it.summary ? el("p", { text: it.summary }) : null,
-        itemActions(it, rerender)));
+    for (const group of S.timelineGroups(items)) {
+      list.appendChild(el("li", { class: "tl-day" },
+        el("h3", { text: group.label + " (" + group.items.length + ")" })));
+      for (const it of group.items) {
+        const li = el("li", {
+          class: "tl-item",
+          id: "tl-" + S.domSafeId(it.id),
+          dataset: { itemId: it.id },
+        });
+        li.appendChild(el("div", { class: "head" },
+          itemLink(it.id, it.title || "(untitled)", "title"),
+          el("span", { class: "muted", text: S.timeAgo(it.published || it.fetched) })));
+        li.appendChild(el("div", { class: "badges" }, itemBadges(it)));
+        if (it.summary) li.appendChild(el("p", { text: it.summary }));
+        for (const part of renderItemAnnotations(it)) li.appendChild(part);
+        li.appendChild(itemActions(it, rerender));
+        list.appendChild(li);
+      }
     }
   }
 
-  async function loadFeed() {
+  // focusTimelineItem moves the stream to one record: it opens the view,
+  // scrolls the card into position and marks it. If the record is outside the
+  // current collection filter, it retries once with "all", because a link to a
+  // record must never be a dead end.
+  function focusTimelineItem(id, retried) {
+    if (!id) return false;
+    let target = null;
+    for (const li of $("timeline").querySelectorAll("[data-item-id]")) {
+      if (li.dataset.itemId === id) { target = li; break; }
+    }
+    if (!target) {
+      if (!retried && $("feed-collection").value) {
+        $("feed-collection").value = "";
+        loadTimeline({ item: id }).then(() => focusTimelineItem(id, true));
+        return false;
+      }
+      $("focus-note").textContent = "record " + id + " is not in the current timeline";
+      return false;
+    }
+    for (const li of $("timeline").querySelectorAll(".focus")) li.classList.remove("focus");
+    target.classList.add("focus");
+    target.scrollIntoView({ block: "center" });
+    $("focus-note").textContent = "focused: " + titleOf(id);
+    return true;
+  }
+
+  function renderTimeline() {
+    timelineInto($("timeline"), timelineState.items, loadTimeline);
+    $("feed-count").textContent = timelineState.items.length + " items";
+  }
+
+  async function loadTimeline(params) {
+    params = params || {};
     const collection = $("feed-collection").value;
+    const qs = S.buildQuery({ collection, limit: 500 });
     try {
-      const out = await api("/stenella/api/items?" + S.buildQuery({ collection, limit: 100 }));
-      showNotes(out.notes);
-      $("feed-count").textContent = (out.count || 0) + " items";
-      timelineInto($("timeline"), out.items || [], loadFeed);
+      const [itemsOut, linksOut, notesOut, groupsOut, insightsOut, sourcesOut, colls] = await Promise.all([
+        api("/stenella/api/items?" + qs),
+        api("/stenella/api/links"),
+        api("/stenella/api/notes"),
+        api("/stenella/api/groups"),
+        api("/stenella/api/insights?" + S.buildQuery({ status: "new", limit: 500 })),
+        api("/stenella/api/sources"),
+        api("/stenella/api/collections"),
+      ]);
+      timelineState.items = itemsOut.items || [];
+      timelineState.byId = S.indexByID(timelineState.items);
+      timelineState.links = linksOut.links || [];
+      timelineState.notes = notesOut.notes || [];
+      timelineState.sources = sourcesOut.sources || [];
+      treeData = {
+        sources: sourcesOut.sources || [],
+        groups: groupsOut.groups || [],
+        items: timelineState.items,
+        links: timelineState.links,
+        insights: insightsOut.insights || [],
+      };
+      showNotes(itemsOut.notes);
+      renderTimeline();
+      renderTree();
+      renderSaved(groupsOut.groups || []);
+      renderSources();
+      const names = (colls.collections || []).map((c) => (typeof c === "string" ? c : c.name || c.id));
+      fillSelect($("feed-collection"), [""].concat(names), collection);
+      fillSelect($("brief-collection"), [""].concat(names));
+      if (params.item) {
+        if (!focusTimelineItem(params.item) && $("feed-collection").value === "" && !timelineState.byId.has(params.item)) {
+          // The record is not among the newest page; fetch it directly and
+          // add it to the stream so the link still lands somewhere.
+          await loadFocusRecord(params.item);
+        }
+      } else {
+        $("focus-note").textContent = "";
+      }
+      if (params.q != null) {
+        $("search-input").value = params.q;
+        runSearch(params.q);
+      }
     } catch (err) {
       showError($("timeline"), err);
+    }
+  }
+
+  // loadFocusRecord fetches one record that the current page did not include
+  // and prepends it, so an old link still moves the timeline to it.
+  async function loadFocusRecord(id) {
+    try {
+      const out = await api("/stenella/api/items/" + encodeURIComponent(id));
+      const it = out.item || out;
+      if (!it || !it.id) return;
+      timelineState.items.unshift(it);
+      timelineState.byId.set(it.id, it);
+      renderTimeline();
+      focusTimelineItem(it.id, true);
+    } catch (err) {
+      $("focus-note").textContent = "record " + id + " could not be loaded";
     }
   }
 
   // --- the map -------------------------------------------------------------
 
   let mapItems = [];
-  let mapItemPoints = []; // individual item positions (unclustered)
+  let mapItemPoints = [];
   let mapClusters = [];
   let selectedCluster = null;
-  let mapLinks = []; // all links for drawing lines
+  let mapLinks = [];
 
-  // layoutMap computes both clustered and individual positions. Keeping
-  // clustering out of drawMap means a repaint (e.g. to highlight a selection)
-  // cannot replace the cluster objects and lose which one is selected.
   function layoutMap() {
     const cv = $("map");
     mapClusters = S.cluster(S.geoPoints(mapItems, cv.width, cv.height), 26);
-    // Also compute individual points for drawing links and per-item dots
     mapItemPoints = S.geoPoints(mapItems, cv.width, cv.height);
     if (mapClusters.indexOf(selectedCluster) < 0) selectedCluster = null;
   }
@@ -492,11 +695,9 @@
     const w = cv.width, h = cv.height;
     ctx.clearRect(0, 0, w, h);
 
-    // ocean
     ctx.fillStyle = "rgba(10,132,255,.06)";
     ctx.fillRect(0, 0, w, h);
 
-    // graticule
     ctx.strokeStyle = "rgba(127,127,127,.25)";
     ctx.lineWidth = 1;
     for (const lat of W.graticule.lat) {
@@ -508,7 +709,6 @@
       ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     }
 
-    // the bundled land outline
     ctx.fillStyle = "rgba(127,127,127,.30)";
     ctx.strokeStyle = "rgba(127,127,127,.65)";
     ctx.lineWidth = 1;
@@ -523,11 +723,9 @@
       ctx.stroke();
     }
 
-    // Build a map from item id to its point for link drawing
     const pointById = new Map();
     for (const p of mapItemPoints) pointById.set(p.item.id, p);
 
-    // Draw link lines between connected items
     if (mapLinks.length > 0) {
       ctx.strokeStyle = "rgba(10,132,255,.35)";
       ctx.lineWidth = 1.5;
@@ -545,7 +743,6 @@
       ctx.setLineDash([]);
     }
 
-    // Draw individual dots for each item (smaller, semi-transparent)
     ctx.fillStyle = "rgba(240,68,56,.45)";
     ctx.strokeStyle = "rgba(240,68,56,.7)";
     ctx.lineWidth = 1;
@@ -565,7 +762,6 @@
       }
     }
 
-    // Draw cluster markers (larger circles showing density) on top
     for (const c of mapClusters) {
       const sel = c === selectedCluster;
       const r = Math.min(6 + Math.sqrt(c.count) * 2.2, 18);
@@ -596,7 +792,6 @@
     ctx.font = "11px system-ui, sans-serif";
     ctx.fillText(mapClusters.length + " clusters, " + mapItemPoints.length + " items from " + mapItems.filter((i) => i.hasGeo).length + " placed items", 8, h - 8);
 
-    // publish the selection for assistive tech and the browser test
     if (selectedCluster) {
       cv.dataset.selectedItems = selectedCluster.items.map((i) => i.id).join(",");
       cv.dataset.selectedCount = String(selectedCluster.count);
@@ -607,7 +802,7 @@
   }
 
   // selectCluster records the clicked marker, repaints so its circle changes
-  // colour, and fills the info panel.
+  // colour, and fills the info panel with canonical item links.
   function selectCluster(c) {
     selectedCluster = c;
     drawMap();
@@ -615,23 +810,20 @@
     clear(box);
     box.dataset.items = c.items.map((i) => i.id).join(",");
     box.dataset.count = String(c.count);
-    box.appendChild(el("h3", { text: c.count === 1 ? (c.items[0].title || "(untitled)") : c.count + " items here" }));
     if (c.count === 1) {
       const it = c.items[0];
+      box.appendChild(el("h3", {}, itemLink(it.id, it.title || "(untitled)")));
       box.appendChild(el("div", { class: "badges" }, itemBadges(it)));
       if (it.summary) box.appendChild(el("p", { text: it.summary }));
+      box.appendChild(el("p", {}, itemLink(it.id, "Open in timeline →")));
     } else {
+      box.appendChild(el("h3", { text: c.count + " items here" }));
       const ul = el("ul", { class: "cites" });
-      for (const it of c.items) {
-        ul.appendChild(el("li", {},
-          el("a", { href: "#/feed?item=" + encodeURIComponent(it.id), text: it.title || "(untitled)" })));
-      }
+      for (const it of c.items) ul.appendChild(el("li", {}, itemLink(it.id, it.title || "(untitled)")));
       box.appendChild(ul);
     }
   }
 
-  // focusItemOnMap selects the cluster that holds `id`, so a "Map" link lands on
-  // the item it names instead of on an unselected map.
   function focusItemOnMap(id) {
     if (!id) return false;
     for (const c of mapClusters) {
@@ -642,7 +834,8 @@
     }
     const box = $("map-info");
     clear(box);
-    box.appendChild(el("p", { class: "muted", text: "this item has no placed location" }));
+    box.appendChild(el("p", { class: "muted", text: "this item has no placed location — " },
+      itemLink(id, "open it in the timeline")));
     return false;
   }
 
@@ -665,20 +858,19 @@
 
   // --- the information tree ------------------------------------------------
 
-  let treeData = null;
-  let treeFocus = "";
-
   function treeNodeEl(node) {
     const kids = node.children || [];
     const attrs = node.id ? { "data-item-id": node.id } : {};
+    const isItem = node.kind === "item" || node.kind === "link";
+    const label = isItem && node.id
+      ? itemLink(node.id, node.label, "tree-link")
+      : el("span", { text: node.label });
     if (kids.length === 0) {
-      return el("li", attrs,
-        el("span", { text: node.label }),
+      return el("li", attrs, label,
         el("span", { class: "kind kind-" + node.kind, text: node.kind }));
     }
     const det = el("details", { open: node.kind === "group" || node.kind === "source" },
-      el("summary", {},
-        el("span", { text: node.label }),
+      el("summary", {}, label,
         el("span", { class: "kind kind-" + node.kind, text: node.kind + " · " + kids.length })));
     const ul = el("ul");
     for (const k of kids) ul.appendChild(treeNodeEl(k));
@@ -686,8 +878,7 @@
     return el("li", attrs, det);
   }
 
-  // focusTreeItem opens the path down to one item and marks it, so a "Tree" link
-  // lands on the item it names instead of on a folded tree.
+  // focusTreeItem opens the path down to one item and marks it.
   function focusTreeItem(id) {
     if (!id) return false;
     const box = $("tree");
@@ -716,30 +907,7 @@
     if (treeFocus) focusTreeItem(treeFocus);
   }
 
-  async function loadTree(params) {
-    treeFocus = (params && params.item) || "";
-    try {
-      const [sources, groups, items, links, insights] = await Promise.all([
-        api("/stenella/api/sources"),
-        api("/stenella/api/groups"),
-        api("/stenella/api/items?" + S.buildQuery({ limit: 1000 })),
-        api("/stenella/api/links"),
-        api("/stenella/api/insights"),
-      ]);
-      treeData = {
-        sources: sources.sources || [],
-        groups: groups.groups || [],
-        items: items.items || [],
-        links: links.links || [],
-        insights: insights.insights || [],
-      };
-      renderTree();
-    } catch (err) {
-      showError($("tree"), err);
-    }
-  }
-
-  // --- the insights inbox --------------------------------------------------
+  // --- the insights queue (dashboard) -------------------------------------
 
   async function loadInbox() {
     const status = $("inbox-status").value;
@@ -748,6 +916,7 @@
       const list = S.triage(out.insights || []);
       const box = $("inbox");
       clear(box);
+      $("inbox-count").textContent = list.length + " " + status;
       if (list.length === 0) {
         box.appendChild(el("p", { class: "muted", text: "no insights in this state" }));
         return;
@@ -762,10 +931,11 @@
           el("p", { text: inx.text || "" }),
           el("p", { class: "muted", text: (inx.count || 0) + " items · " + (inx.sources || []).join(", ") }),
         );
+        if (inx.ruleName) card.appendChild(el("p", { class: "muted", text: "rule: " + inx.ruleName }));
         if (inx.reason) card.appendChild(el("p", { class: "muted", text: "dismissed: " + inx.reason }));
         if (inx.items && inx.items.length) {
           const ul = el("ul", { class: "cites" });
-          for (const id of inx.items) ul.appendChild(el("li", { text: id }));
+          for (const id of inx.items) ul.appendChild(el("li", {}, itemLink(id, titleOf(id))));
           card.appendChild(ul);
         }
         const acts = el("div", { class: "acts" });
@@ -805,7 +975,7 @@
   // --- search --------------------------------------------------------------
 
   async function runSearch(query) {
-    const q = query != null ? query : $("q").value;
+    const q = query != null ? query : $("search-input").value;
     $("search-input").value = q;
     try {
       const out = await api("/stenella/api/search?" + S.buildQuery({ q, limit: 200 }));
@@ -816,58 +986,51 @@
     }
   }
 
-  async function loadSaved() {
+  function renderSaved(groups) {
     const box = $("saved");
-    try {
-      const out = await api("/stenella/api/groups");
-      clear(box);
-      const groups = out.groups || [];
-      if (groups.length === 0) { box.appendChild(el("span", { class: "muted", text: "no saved queries yet" })); return; }
-      box.appendChild(el("span", { class: "muted", text: "saved:" }));
-      for (const g of groups) {
-        box.appendChild(el("button", { type: "button", id: gid("query", g.id), text: g.name, title: g.query || "", onClick: () => runSearch(g.query || "") }));
-        box.appendChild(el("button", {
-          type: "button", class: "danger", id: gid("query-del", g.id), text: "×", title: "Delete " + g.name,
-          onClick: async () => {
-            try { await api("/stenella/api/groups/" + encodeURIComponent(g.id), { method: "DELETE" }); loadSaved(); }
-            catch (e) { inlineError(box, e); }
-          },
-        }));
-      }
-    } catch (err) {
-      showError(box, err);
+    clear(box);
+    if (!groups || groups.length === 0) { box.appendChild(el("span", { class: "muted", text: "no saved queries yet" })); return; }
+    box.appendChild(el("span", { class: "muted", text: "saved:" }));
+    for (const g of groups) {
+      box.appendChild(el("button", { type: "button", id: gid("query", g.id), text: g.name, title: g.query || "", onClick: () => runSearch(g.query || "") }));
+      box.appendChild(el("button", {
+        type: "button", class: "danger", id: gid("query-del", g.id), text: "×", title: "Delete " + g.name,
+        onClick: async () => {
+          try { await api("/stenella/api/groups/" + encodeURIComponent(g.id), { method: "DELETE" }); loadTimeline(routeParams()); }
+          catch (e) { inlineError(box, e); }
+        },
+      }));
     }
   }
 
   // --- sources, exports, OPML ---------------------------------------------
 
-  async function loadSources() {
-    try {
-      const out = await api("/stenella/api/sources");
-      const body = $("sources-body");
-      clear(body);
-      for (const s of out.sources || []) {
-        const tr = el("tr", {},
-          el("td", { text: s.name }),
-          el("td", { text: s.kind || "feed" }),
-          el("td", { text: s.collection || "all" }),
-          el("td", { text: s.reliability || "" }),
-          el("td", { text: s.lastStatus || "never" }),
-          el("td", { text: String(s.lastCount || 0) }),
-          el("td", {},
-            el("button", { type: "button", id: gid("src-toggle", s.id), text: s.enabled ? "Disable" : "Enable", onClick: async () => {
-              try { await post("/stenella/api/sources/" + encodeURIComponent(s.id), { action: s.enabled ? "disable" : "enable" }); loadSources(); }
-              catch (e) { inlineError(body, e); }
-            } }),
-            " ",
-            el("button", { type: "button", id: gid("src-fetch", s.id), text: "Fetch", onClick: async () => {
-              try { await post("/stenella/api/sources/" + encodeURIComponent(s.id), { action: "fetch" }); loadSources(); }
-              catch (e) { inlineError(body, e); }
-            } })));
-        body.appendChild(tr);
-      }
-    } catch (err) {
-      showError($("sources-body"), err);
+  function renderSources() {
+    const body = $("sources-body");
+    clear(body);
+    const sources = timelineState.sources || [];
+    for (const s of sources) {
+      const tr = el("tr", {},
+        el("td", { text: s.name }),
+        el("td", { text: s.kind || "feed" }),
+        el("td", { text: s.collection || "all" }),
+        el("td", { text: s.reliability || "" }),
+        el("td", { text: s.lastStatus || "never" }),
+        el("td", { text: String(s.lastCount || 0) }),
+        el("td", {},
+          el("button", { type: "button", id: gid("src-toggle", s.id), text: s.enabled ? "Disable" : "Enable", onClick: async () => {
+            try { await post("/stenella/api/sources/" + encodeURIComponent(s.id), { action: s.enabled ? "disable" : "enable" }); loadTimeline(routeParams()); }
+            catch (e) { inlineError(body, e); }
+          } }),
+          " ",
+          el("button", { type: "button", id: gid("src-fetch", s.id), text: "Fetch", onClick: async () => {
+            try { await post("/stenella/api/sources/" + encodeURIComponent(s.id), { action: "fetch" }); loadTimeline(routeParams()); }
+            catch (e) { inlineError(body, e); }
+          } })));
+      body.appendChild(tr);
+    }
+    if (sources.length === 0) {
+      body.appendChild(el("tr", {}, el("td", { colspan: "7", class: "muted", text: "no sources configured" })));
     }
   }
 
@@ -877,7 +1040,9 @@
     try {
       const rep = await post("/stenella/api/run", {});
       out.textContent = "run: " + JSON.stringify(rep);
-      loadSources();
+      await loadTimeline(routeParams());
+      loadDashboard();
+      loadInbox();
     } catch (err) {
       out.textContent = err.message;
     }
@@ -938,25 +1103,37 @@
 
   // --- the router ----------------------------------------------------------
 
+  // The timeline absorbed the old feed, tree, search and sources views; the
+  // dashboard absorbed the insight inbox. Old bookmarks and links are aliased
+  // rather than broken.
+  const ALIAS = {
+    feed: "timeline",
+    tree: "timeline",
+    search: "timeline",
+    sources: "timeline",
+    console: "timeline",
+    inbox: "dashboard",
+    map: "timeline",
+  };
+
   const VIEWS = {
-    dashboard: { show: "#view-dashboard", load: loadDashboard },
-    feed: { show: "#view-feed", load: loadFeed },
+    dashboard: { show: "#view-dashboard", load: () => { loadDashboard(); loadInbox(); } },
     map: { show: "#view-map", load: loadMap },
-    tree: { show: "#view-tree", load: loadTree },
-    inbox: { show: "#view-inbox", load: loadInbox },
-    search: { show: "#view-search", load: () => { loadSaved(); } },
-    sources: { show: "#view-sources", load: () => { loadSources(); } },
-    console: { show: "#view-console", load: loadConsole },
+    timeline: { show: "#view-timeline", load: loadTimeline },
   };
 
   let currentKey = "";
+  let lastParams = {};
+
+  function routeParams() { return lastParams || {}; }
 
   function route() {
-    const { view, params } = S.routeOf(window.location.hash);
-    const chosen = VIEWS[view] ? view : "dashboard";
-    // VIEWS[].show holds a CSS selector ("#view-map"), so it must be looked up
-    // with querySelector, not getElementById — otherwise every lookup is null
-    // and no view is ever revealed.
+    const parsed = S.routeOf(window.location.hash);
+    const chosen = ALIAS[parsed.view] || (VIEWS[parsed.view] ? parsed.view : "dashboard");
+    lastParams = parsed.params;
+    if (chosen !== parsed.view) {
+      history.replaceState(null, "", S.hrefFor(chosen, parsed.params));
+    }
     for (const name of Object.keys(VIEWS)) {
       const sec = document.querySelector(VIEWS[name].show);
       if (sec) sec.hidden = name !== chosen;
@@ -965,13 +1142,10 @@
       if (a.dataset.view === chosen) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
     }
-    // Reload when the parameters change too: a "Map"/"Tree" link is
-    // #/map?item=… / #/tree?item=…, and the view name alone would not change
-    // if the analyst is already on that view.
-    const key = chosen + "?" + S.buildQuery(params);
+    const key = chosen + "?" + S.buildQuery(parsed.params);
     if (key !== currentKey) {
       currentKey = key;
-      VIEWS[chosen].load(params);
+      VIEWS[chosen].load(parsed.params);
     }
     window.scrollTo(0, 0);
   }
@@ -979,19 +1153,12 @@
   // --- wiring --------------------------------------------------------------
 
   function init() {
-    // Preload all views in the background so they're ready when navigated to
     loadFilterOptions().then(() => {
       loadDashboard();
-      // Preload remaining views after dashboard renders
-      setTimeout(() => {
-        loadFeed();
-        loadMap({});
-        loadTree({});
-        loadInbox();
-        loadSaved();
-        loadSources();
-        loadConsole();
-      }, 0);
+      loadInbox();
+      loadTimeline({});
+      loadMap({});
+      loadConsole();
     });
 
     $("f-apply").addEventListener("click", loadDashboard);
@@ -1001,8 +1168,8 @@
       $(id).addEventListener("change", loadDashboard);
     }
 
-    $("feed-collection").addEventListener("change", loadFeed);
-    $("feed-refresh").addEventListener("click", loadFeed);
+    $("feed-collection").addEventListener("change", () => loadTimeline(routeParams()));
+    $("feed-refresh").addEventListener("click", () => loadTimeline(routeParams()));
 
     $("map").addEventListener("click", (ev) => {
       const cv = $("map");
@@ -1033,24 +1200,21 @@
 
     $("inbox-status").addEventListener("change", loadInbox);
     $("inbox-run").addEventListener("click", async () => {
-      try { await post("/stenella/api/run", {}); loadInbox(); }
+      try { await post("/stenella/api/run", {}); loadInbox(); loadDashboard(); }
       catch (e) { showError($("inbox"), e); }
     });
 
     $("searchbar").addEventListener("submit", (e) => {
       e.preventDefault();
-      window.location.hash = S.hrefFor("search", { q: $("q").value });
-      runSearch($("q").value);
+      window.location.hash = S.hrefFor("timeline", { q: $("q").value });
     });
-    // Saving a query opens an inline form (never a dialog). The header button is
-    // inside form#searchbar, so its form is attached to the header instead.
     $("save-query").addEventListener("click", () => {
       openAction(document.querySelector("header"), "save-query", "header",
         [{ name: "name", label: "Group name", value: $("q").value }],
         async (v) => {
           if (!v.name) throw new Error("give the query a name");
           await post("/stenella/api/groups", { name: v.name, query: $("q").value });
-          loadSaved();
+          await loadTimeline(routeParams());
         });
     });
     $("search-go").addEventListener("click", () => runSearch($("search-input").value));
@@ -1060,7 +1224,7 @@
         async (v) => {
           if (!v.name) throw new Error("give the query a name");
           await post("/stenella/api/groups", { name: v.name, query: $("search-input").value });
-          loadSaved();
+          await loadTimeline(routeParams());
         });
     });
 
@@ -1077,7 +1241,7 @@
         });
         e.target.reset();
         $("src-msg").textContent = "added " + f.get("name");
-        loadSources();
+        await loadTimeline(routeParams());
       } catch (err) { $("src-msg").textContent = err.message; }
     });
     $("opml-import").addEventListener("click", async () => {
@@ -1090,14 +1254,31 @@
           body: doc,
         });
         $("opml-result").textContent = "added " + res.added + ", skipped " + res.skipped;
-        loadSources();
+        await loadTimeline(routeParams());
       } catch (err) { $("opml-result").textContent = err.message; }
     });
     $("brief-print").addEventListener("click", printBriefing);
 
+    // Every record reference is followed by the same gesture: open the
+    // timeline and put that record in focus. The hash still drives ordinary
+    // navigation; this catch-all makes a repeat click on the already-current
+    // link work too, and keeps a citation inside a card from being a dead end.
+    document.addEventListener("click", (ev) => {
+      const a = ev.target && ev.target.closest ? ev.target.closest("a.item-link") : null;
+      if (!a) return;
+      const id = a.dataset.itemId;
+      if (!id) return;
+      ev.preventDefault();
+      const href = S.itemHref("timeline", id);
+      if (window.location.hash === href) {
+        route();
+        focusTimelineItem(id);
+      } else {
+        window.location.hash = href;
+      }
+    });
+
     window.addEventListener("hashchange", route);
-    window.addEventListener("offline", () => { offline = true; });
-    window.addEventListener("online", () => { offline = false; });
     route();
   }
 
