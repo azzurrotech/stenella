@@ -48,11 +48,14 @@ func (a *App) listItems(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		itemData := a.itemView(it)
-		// Add comments and links for each item
+		// Annotations travel with the record. LinksFor returns edges in both
+		// directions, so an incoming link renders exactly like an outgoing one.
 		links, _ := a.store.LinksFor(it.ID)
 		comments, _ := a.store.CommentsFor(it.ID)
+		notes, _ := a.store.NotesFor(it.ID)
 		itemData["links"] = links
 		itemData["comments"] = comments
+		itemData["notes"] = notes
 		out = append(out, itemData)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -483,6 +486,9 @@ func (a *App) listRules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rules": rules, "count": len(rules)})
 }
 
+// createRule stores a rule after normalising its vocabulary. Conditions are
+// validated here, not at evaluation time, so a typo is rejected at the point a
+// human made it.
 func (a *App) createRule(w http.ResponseWriter, r *http.Request) {
 	var rule Rule
 	if !decode(w, r, &rule) {
@@ -495,11 +501,39 @@ func (a *App) createRule(w http.ResponseWriter, r *http.Request) {
 	rule.Name = cleanInline(rule.Name, 120)
 	rule.Text = cleanInline(rule.Text, 300)
 	rule.Severity = severityOr(rule.Severity)
+	grade, ok := normalizeReliability(rule.MinReliability)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "minReliability must be a grade from A to F")
+		return
+	}
+	rule.MinReliability = grade
+	origin := strings.ToLower(strings.TrimSpace(rule.LinkOrigin))
+	if origin != "" && origin != "auto" && origin != "human" {
+		writeErr(w, http.StatusBadRequest, "linkOrigin must be auto or human")
+		return
+	}
+	rule.LinkOrigin = origin
+	rule.Relations = normalizeRelations(rule.Relations)
 	if err := a.store.PutRule(&rule); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, rule)
+}
+
+// normalizeRelations lower-cases, de-duplicates and drops empty relations.
+func normalizeRelations(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, rel := range in {
+		rel = strings.ToLower(strings.TrimSpace(rel))
+		if rel == "" || seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		out = append(out, rel)
+	}
+	return out
 }
 
 func (a *App) getRule(w http.ResponseWriter, r *http.Request) {
@@ -534,7 +568,7 @@ func (a *App) ruleAction(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		matches := evaluate(rule, items, nowUTC())
+		matches := evaluateWith(rule, items, a.evalEnv())
 		if len(matches) == 0 {
 			writeJSON(w, http.StatusOK, map[string]any{"rule": rule.ID, "fired": false, "count": 0})
 			return
@@ -730,14 +764,24 @@ func (a *App) stats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) health(w http.ResponseWriter, r *http.Request) {
+	// The platform's own report is the source of truth for component state.
+	// A plain GET is cheap and read-only; ?check=1 exercises every module with
+	// pod.WriteRead, a shepherd issue/verify and a vault round-trip.
+	report := a.srv.Health()
+	if formValue(r, "check") == "1" || formValue(r, "probe") == "1" {
+		report = a.srv.Check()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"platform":  "atp",
-		"atp":       atp.Version,
-		"app":       "stenella",
-		"time":      nowUTC(),
-		"encrypted": a.srv.Encrypted(),
-		"counts":    a.store.Counts(),
+		"ok":         report.OK(),
+		"status":     report.Status,
+		"platform":   "atp",
+		"atp":        atp.Version,
+		"app":        "stenella",
+		"time":       nowUTC(),
+		"encrypted":  a.srv.Encrypted(),
+		"counts":     a.store.Counts(),
+		"components": report.Components,
+		"failures":   report.Failures,
 	})
 }
 

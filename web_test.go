@@ -19,7 +19,7 @@ import (
 // The client logic is covered by node's test runner (web/tests/, run in the
 // evidence step). These tests cover what the platform itself is responsible
 // for: that the assets are embedded, materialised into the app directory and
-// served, that the four views exist in the shipped shell, and that atp's
+// served, that the three views exist in the shipped shell, and that atp's
 // generated PWA plumbing (manifest, service worker, OpenSearch) really works
 // for this app.
 // ---------------------------------------------------------------------------
@@ -94,20 +94,30 @@ func TestViewsCoverTheReadme(t *testing.T) {
 	_, shell := call(t, srv, http.MethodGet, "/stenella/", "")
 	_, js := call(t, srv, http.MethodGet, "/stenella/app.js", "")
 
-	// the four coordinated views plus the smaller tools, as regions
+	// exactly three destination views: the smaller tools are panels inside the
+	// timeline, and the insight queue lives on the dashboard.
+	views := regexp.MustCompile(`data-view="([^"]+)"`).FindAllStringSubmatch(shell, -1)
+	if len(views) != 3 {
+		t.Errorf("the shell has %d view links, want 3 (dashboard, map, timeline)", len(views))
+	}
 	for _, want := range []string{
-		`id="view-dashboard"`, `id="view-feed"`, `id="view-map"`, `id="view-tree"`,
-		`id="view-inbox"`, `id="view-search"`, `id="view-sources"`, `id="view-console"`,
+		`id="view-dashboard"`, `id="view-map"`, `id="view-timeline"`,
 		`id="searchbar"`, `id="sources-body"`, `id="opml"`,
+		`id="panel-search"`, `id="panel-tree"`, `id="panel-sources"`, `id="panel-console"`,
 	} {
 		if !strings.Contains(shell, want) {
 			t.Errorf("the shell has no %s region", want)
 		}
 	}
+	// the shared, DOM-free view logic is loaded from song before the app
+	if !strings.Contains(shell, "/_song/viewkit.js") {
+		t.Error("the shell does not load the shared song viewkit")
+	}
 
-	// the dashboard's documented regions and the canvas charts
+	// the dashboard's documented regions and the canvas charts, including the
+	// insight queue it now owns
 	for _, want := range []string{
-		`id="filters"`, `id="kpis"`, `id="charts"`,
+		`id="filters"`, `id="kpis"`, `id="charts"`, `id="inbox"`,
 		`id="chart-source"`, `id="chart-time"`, `id="chart-category"`,
 	} {
 		if !strings.Contains(shell, want) {
@@ -134,8 +144,8 @@ func TestViewsCoverTheReadme(t *testing.T) {
 		t.Error("the dashboard does not update its charts in place")
 	}
 
-	// the timeline, the map's offline base, the tree and the inbox
-	for _, want := range []string{"id=\"timeline\"", "id=\"map\"", "id=\"tree\"", "id=\"inbox\""} {
+	// the timeline, the map's offline base and the tree panel
+	for _, want := range []string{"id=\"timeline\"", "id=\"map\"", "id=\"tree\""} {
 		if !strings.Contains(shell, want) {
 			t.Errorf("the shell has no %s", want)
 		}
@@ -227,11 +237,20 @@ func TestViewsAndScriptAgreeOnElementIDs(t *testing.T) {
 		}
 	}
 
+	// The old destinations are aliases, not deletions: a bookmark to #/feed or
+	// #/inbox must still land on a live view.
+	for _, legacy := range []string{"feed", "tree", "search", "sources", "console", "inbox"} {
+		entry := regexp.MustCompile(`(?m)^\s*"?` + legacy + `"?\s*:\s*"(dashboard|map|timeline)"`)
+		if !entry.MatchString(js) {
+			t.Errorf("legacy route %q has no alias to a live view in app.js", legacy)
+		}
+	}
+
 	// A router entry's `show` value is a CSS selector ("#view-map"). It must
 	// name a real element, and it must be resolved with querySelector: handing
 	// it to $() (getElementById) silently yields null, which reveals no view.
 	shows := regexp.MustCompile(`show:\s*"(#[^"]+)"`).FindAllStringSubmatch(js, -1)
-	if len(shows) < 8 {
+	if len(shows) < 3 {
 		t.Fatalf("only %d router show selectors found in app.js", len(shows))
 	}
 	for _, m := range shows {
@@ -390,14 +409,19 @@ func TestCardActionsUseNoDialogsAndEveryButtonHasAnID(t *testing.T) {
 		}
 	}
 
-	// the unique-id helper is exported from lib.js and used for the controls
+	// the unique-id helper lives in the shared song viewkit and is re-exported
+	// by lib.js, so app.js can keep calling S.actionId/S.domSafeId
+	_, viewkit := call(t, srv, http.MethodGet, "/_song/viewkit.js", "")
 	for _, want := range []string{"function actionId(", "function domSafeId("} {
-		if !strings.Contains(lib, want) {
-			t.Errorf("lib.js does not define %s", want)
+		if !strings.Contains(viewkit, want) {
+			t.Errorf("the shared viewkit does not define %s", want)
 		}
 	}
-	if !strings.Contains(lib, "actionId: actionId") || !strings.Contains(lib, "domSafeId: domSafeId") {
-		t.Error("lib.js does not export actionId/domSafeId")
+	if !strings.Contains(viewkit, "actionId: actionId") || !strings.Contains(viewkit, "domSafeId: domSafeId") {
+		t.Error("the shared viewkit does not export actionId/domSafeId")
+	}
+	if !strings.Contains(lib, "viewkit.js") {
+		t.Error("lib.js does not delegate to the shared song viewkit")
 	}
 	if !strings.Contains(js, "S.actionId(") {
 		t.Error("app.js does not build generated ids with S.actionId")

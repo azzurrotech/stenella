@@ -32,11 +32,12 @@ func (a *App) runRules(collection string) (int, error) {
 
 	var errs []string
 	open := 0
+	env := a.evalEnv()
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
-		matches := evaluate(rule, items, nowUTC())
+		matches := evaluateWith(rule, items, env)
 		if len(matches) == 0 {
 			continue
 		}
@@ -72,14 +73,110 @@ func collectionOfInsight(a *App, in *Insight) string {
 	return collectionOrDefault(it.Collection)
 }
 
-// evaluate applies one rule to a candidate set and returns the citations.
+// evalEnv is the graph context a rule needs beyond the candidate items: each
+// source's reliability grade and the relations each item participates in. It is
+// built once per run so a hundred rules do not re-read the store a hundred
+// times.
+type evalEnv struct {
+	now         time.Time
+	reliability map[string]int             // lower-case source name → rank (A=0 … F=5)
+	links       map[string]map[string]bool // item id → relation and relation|origin
+}
+
+// reliabilityRank turns an Admiralty grade into a sortable rank. An empty or
+// unrecognised grade ranks as F: unknown is treated as least reliable, which is
+// the safe reading when a rule asks for a minimum.
+func reliabilityRank(grade string) int {
+	g := strings.ToUpper(strings.TrimSpace(grade))
+	for i, v := range reliabilityGrades {
+		if g == v {
+			return i
+		}
+	}
+	return len(reliabilityGrades) - 1
+}
+
+// normalizeReliability returns a canonical grade, defaulting to "" for an
+// unset value and rejecting anything outside A–F.
+func normalizeReliability(grade string) (string, bool) {
+	g := strings.ToUpper(strings.TrimSpace(grade))
+	if g == "" {
+		return "", true
+	}
+	for _, v := range reliabilityGrades {
+		if g == v {
+			return g, true
+		}
+	}
+	return "", false
+}
+
+// evalEnv loads the graph context for one rule run.
+func (a *App) evalEnv() *evalEnv {
+	env := &evalEnv{
+		now:         nowUTC(),
+		reliability: map[string]int{},
+		links:       map[string]map[string]bool{},
+	}
+	if sources, err := a.store.Sources(); err == nil {
+		for _, s := range sources {
+			name := strings.ToLower(strings.TrimSpace(s.Name))
+			if name != "" {
+				env.reliability[name] = reliabilityRank(s.Reliability)
+			}
+		}
+	}
+	if links, err := a.store.Links(); err == nil {
+		for _, l := range links {
+			if l == nil {
+				continue
+			}
+			rel := strings.ToLower(strings.TrimSpace(l.Relation))
+			if rel == "" {
+				rel = "related"
+			}
+			origin := strings.ToLower(strings.TrimSpace(l.Origin))
+			for _, id := range []string{l.From, l.To} {
+				if id == "" {
+					continue
+				}
+				set := env.links[id]
+				if set == nil {
+					set = map[string]bool{}
+					env.links[id] = set
+				}
+				set[rel] = true
+				if origin != "" {
+					set[rel+"|"+origin] = true
+				}
+			}
+		}
+	}
+	return env
+}
+
+// evaluate applies one rule without graph context. It is kept for callers that
+// only have items (and for tests); runRules and the API use evaluateWith.
+func evaluate(rule *Rule, items []*Item, now time.Time) []*Item {
+	return evaluateWith(rule, items, &evalEnv{now: now, reliability: map[string]int{}, links: map[string]map[string]bool{}})
+}
+
+// evaluateWith applies one rule to a candidate set and returns the citations.
 //
 // A rule is data: an optional window, tag/source/entity conditions with an any
-// or all reading, and the two counts that make a rule meaningful — how many
-// items and how many distinct sources it needs. With no conditions at all a
-// rule matches everything, so a pure count rule ("five items in 24h") still
-// expresses itself.
-func evaluate(rule *Rule, items []*Item, now time.Time) []*Item {
+// or all reading, an optional minimum source reliability, an optional link
+// relation, and the two counts that make a rule meaningful — how many items and
+// how many distinct sources it needs. With no conditions at all a rule matches
+// everything, so a pure count rule ("five items in 24h") still expresses itself.
+func evaluateWith(rule *Rule, items []*Item, env *evalEnv) []*Item {
+	if env == nil {
+		env = &evalEnv{}
+	}
+	if env.now.IsZero() {
+		env.now = nowUTC()
+	}
+	now := env.now
+
 	window := parseWindow(rule.Window)
 	cutoff := time.Time{}
 	if window > 0 {
@@ -91,7 +188,7 @@ func evaluate(rule *Rule, items []*Item, now time.Time) []*Item {
 		if !cutoff.IsZero() && !it.Published.IsZero() && it.Published.Before(cutoff) {
 			continue
 		}
-		if !ruleMatches(rule, it) {
+		if !ruleMatches(rule, it, env) {
 			continue
 		}
 		matches = append(matches, it)
@@ -116,7 +213,7 @@ func evaluate(rule *Rule, items []*Item, now time.Time) []*Item {
 }
 
 // ruleMatches reports whether one item satisfies a rule's conditions.
-func ruleMatches(rule *Rule, it *Item) bool {
+func ruleMatches(rule *Rule, it *Item, env *evalEnv) bool {
 	if len(rule.Tags) > 0 {
 		if rule.MatchAll {
 			if !subsetAll(rule.Tags, it.Categories) {
@@ -135,7 +232,62 @@ func ruleMatches(rule *Rule, it *Item) bool {
 			return false
 		}
 	}
+	if rule.MinReliability != "" {
+		if !itemMeetsReliability(rule.MinReliability, it, env) {
+			return false
+		}
+	}
+	if len(rule.Relations) > 0 {
+		if !itemHasRelation(rule.Relations, rule.LinkOrigin, it, env) {
+			return false
+		}
+	}
 	return true
+}
+
+// itemMeetsReliability reports whether at least one of the item's sources is at
+// least as reliable as the rule's minimum.
+func itemMeetsReliability(min string, it *Item, env *evalEnv) bool {
+	want := reliabilityRank(min)
+	if env == nil {
+		return false
+	}
+	for _, name := range uniqueStrings(append(it.Attributions, it.Source)) {
+		rank, known := env.reliability[strings.ToLower(strings.TrimSpace(name))]
+		if !known {
+			rank = reliabilityRank("")
+		}
+		if rank <= want {
+			return true
+		}
+	}
+	return false
+}
+
+// itemHasRelation reports whether the item is an endpoint of a link with one of
+// the wanted relations, optionally narrowed to one origin.
+func itemHasRelation(want []string, origin string, it *Item, env *evalEnv) bool {
+	if env == nil {
+		return false
+	}
+	set := env.links[it.ID]
+	if len(set) == 0 {
+		return false
+	}
+	origin = strings.ToLower(strings.TrimSpace(origin))
+	for _, rel := range want {
+		key := strings.ToLower(strings.TrimSpace(rel))
+		if key == "" {
+			continue
+		}
+		if origin != "" {
+			key += "|" + origin
+		}
+		if set[key] {
+			return true
+		}
+	}
+	return false
 }
 
 func entityMatches(want []string, it *Item) bool {

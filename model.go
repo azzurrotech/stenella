@@ -151,19 +151,33 @@ type Group struct {
 // rule can be created, edited and disabled at runtime and re-run over the whole
 // collection.
 type Rule struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Text       string    `json:"text"`     // the human sentence the insight states
-	Severity   string    `json:"severity"` // info | low | medium | high | critical
-	Window     string    `json:"window,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	Tags       []string  `json:"tags,omitempty"`
-	Sources    []string  `json:"sources,omitempty"`
-	Entities   []string  `json:"entities,omitempty"`
-	MatchAll   bool      `json:"matchAll,omitempty"`   // every tag must match, not any
-	MinItems   int       `json:"minItems,omitempty"`   // fire only with this many matching items
-	MinSources int       `json:"minSources,omitempty"` // …and this many distinct sources
-	Created    time.Time `json:"created,omitempty"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Text       string   `json:"text"`     // the human sentence the insight states
+	Severity   string   `json:"severity"` // info | low | medium | high | critical
+	Window     string   `json:"window,omitempty"`
+	Enabled    bool     `json:"enabled"`
+	Tags       []string `json:"tags,omitempty"`
+	Sources    []string `json:"sources,omitempty"`
+	Entities   []string `json:"entities,omitempty"`
+	MatchAll   bool     `json:"matchAll,omitempty"`   // every tag must match, not any
+	MinItems   int      `json:"minItems,omitempty"`   // fire only with this many matching items
+	MinSources int      `json:"minSources,omitempty"` // …and this many distinct sources
+
+	// MinReliability is the weakest Admiralty grade (A–F) a source may carry and
+	// still count toward the rule. An item qualifies when at least one of its
+	// sources (its own or an attribution) is at least that reliable, so a story
+	// corroborated by a good source is not lost because a weak one also ran it.
+	// An unknown grade is treated as F.
+	MinReliability string `json:"minReliability,omitempty"`
+
+	// Relations requires the item to be an endpoint of a link whose relation is
+	// one of these (supports, contradicts, duplicates, references, related),
+	// in either direction. LinkOrigin narrows that to auto or human links.
+	Relations  []string `json:"relations,omitempty"`
+	LinkOrigin string   `json:"linkOrigin,omitempty"` // auto | human
+
+	Created time.Time `json:"created,omitempty"`
 }
 
 // Insight is the output of a rule: a claim with its citations. An insight is

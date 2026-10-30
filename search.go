@@ -14,7 +14,6 @@
 package main
 
 import (
-	"encoding/csv"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -23,7 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"azzurrotech/shepherd/token"
+	"azzurrotech/pod"
+	"azzurrotech/shepherd/capability"
 )
 
 // ---------------------------------------------------------------------------
@@ -353,16 +353,7 @@ func (a *App) exportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// A UTF-8 BOM so a spreadsheet opens non-ASCII text correctly.
-	if _, err := w.Write([]byte("\xef\xbb\xbf")); err != nil {
-		return
-	}
-	cw := csv.NewWriter(w)
-	defer cw.Flush()
-	_ = cw.Write(csvHeader)
-
+	rows := make([][]string, 0, len(items))
 	for _, it := range items {
 		e := a.exportItem(it)
 		lat, lon, _ := parseGeo(e.Geo)
@@ -370,7 +361,7 @@ func (a *App) exportCSV(w http.ResponseWriter, r *http.Request) {
 		if e.Geo != "" {
 			latS, lonS = formatCoord(lat), formatCoord(lon)
 		}
-		_ = cw.Write([]string{
+		rows = append(rows, []string{
 			e.Title,
 			e.Summary,
 			e.Source,
@@ -384,6 +375,14 @@ func (a *App) exportCSV(w http.ResponseWriter, r *http.Request) {
 			strings.Join(e.Entities, "; "),
 			fmt.Sprintf("%d", e.Comments),
 		})
+	}
+
+	w.Header().Set("Content-Type", pod.ContentType(pod.FormatCSV))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// pod.ExportTable writes the UTF-8 BOM and quotes any field that needs it,
+	// so the CSV shape is the platform's, not a second ad-hoc writer.
+	if err := pod.ExportTable(w, csvHeader, rows, pod.ExportOptions{Format: pod.FormatCSV}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
 }
 
@@ -645,21 +644,14 @@ func (a *App) createShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttl := 7 * 24 * time.Hour
-	if in.TTL != "" {
-		if d, err := time.ParseDuration(in.TTL); err == nil && d > 0 {
-			ttl = d
-		}
-	}
+	ttl := capability.ParseTTL(in.TTL, capability.DefaultTTL)
 
-	raw, claims, err := a.srv.Shepherd().Issue(token.IssueOptions{
+	share, err := capability.Issue(a.srv.Shepherd().Manager(), capability.IssueOptions{
+		Target:  capability.Target{Kind: in.Kind, ID: in.ID},
+		TTL:     ttl,
+		Issuer:  a.srv.Shepherd().Issuer(),
 		Subject: "stenella-share",
 		Scopes:  []string{"stenella", "share"},
-		TTL:     ttl,
-		Meta: map[string]string{
-			"kind":   in.Kind,
-			"target": in.ID,
-		},
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "issue share: "+sanitizeText(err.Error(), 200))
@@ -667,13 +659,13 @@ func (a *App) createShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"token":    raw,
-		"kind":     in.Kind,
-		"id":       in.ID,
-		"issuer":   a.srv.Shepherd().Issuer(),
-		"subject":  claims.Subject,
-		"issuedAt": time.Unix(int64(claims.IssuedAt), 0).UTC(),
-		"expires":  time.Unix(int64(claims.ExpiresAt), 0).UTC(),
+		"token":    share.Token,
+		"kind":     share.Kind,
+		"id":       share.ID,
+		"issuer":   share.Issuer,
+		"subject":  share.Subject,
+		"issuedAt": share.IssuedAt,
+		"expires":  share.Expires,
 		"verify":   "/api/token/verify",
 		"revoke":   "/api/revoke",
 		"note": "a capability record; atp adds no access control to hosted " +

@@ -85,15 +85,7 @@ func (s *Store) ensureTables() error {
 		{tableInsights, Insight{}},
 	}
 	for _, sp := range specs {
-		names, err := columnNames(sp.sample)
-		if err != nil {
-			return err
-		}
-		cols := make([]pod.Column, 0, len(names))
-		for _, n := range names {
-			cols = append(cols, pod.Column{Name: n, Type: "text"})
-		}
-		if err := s.pod.UpdateSchema(sp.name, cols); err != nil {
+		if err := s.pod.EnsureStructSchema(sp.name, sp.sample); err != nil {
 			return fmt.Errorf("stenella: schema %s: %w", sp.name, err)
 		}
 	}
@@ -105,23 +97,15 @@ func (s *Store) ensureTables() error {
 // ---------------------------------------------------------------------------
 
 func putRecord[T any](s *Store, table, id string, rec *T) error {
-	fields, err := fieldsOf(rec)
-	if err != nil {
-		return err
-	}
-	if _, _, err := s.pod.Upsert(table, id, fields); err != nil {
+	if _, _, err := s.pod.UpsertStruct(table, id, rec); err != nil {
 		return fmt.Errorf("stenella: upsert %s/%s: %w", table, id, err)
 	}
 	return nil
 }
 
 func getRecord[T any](s *Store, table, id string) (*T, error) {
-	rec, err := s.pod.Get(table, id)
-	if err != nil {
-		return nil, err
-	}
 	var out T
-	if err := applyFields(rec.Values(), &out); err != nil {
+	if _, err := s.pod.GetStruct(table, id, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -130,19 +114,7 @@ func getRecord[T any](s *Store, table, id string) (*T, error) {
 // listRecords decodes every matching record. A record written by an older
 // schema that no longer decodes is skipped rather than failing the query.
 func listRecords[T any](s *Store, table string, cond pod.Cond, opts *pod.QueryOptions) ([]*T, error) {
-	recs, err := s.pod.Query(table, cond, opts)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*T, 0, len(recs))
-	for _, r := range recs {
-		var v T
-		if err := applyFields(r.Values(), &v); err != nil {
-			continue
-		}
-		out = append(out, &v)
-	}
-	return out, nil
+	return pod.QueryStruct[T](s.pod, table, cond, opts)
 }
 
 func listAll[T any](s *Store, table string) ([]*T, error) {

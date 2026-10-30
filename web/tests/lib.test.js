@@ -246,3 +246,46 @@ test("formatCount and timeAgo render the KPI values", () => {
   // a future stamp (clock skew) reads as "just now", never as a negative age
   assert.equal(S.timeAgo("2026-09-21T00:00:00Z", now), "just now");
 });
+
+test("annotationSections normalises comments, notes and both link directions", () => {
+  const rec = {
+    id: "i1",
+    comments: [{ id: "c1", author: "analyst", body: "worth watching", created: "2026-09-20T10:00:00Z" }],
+    notes: [{ id: "n1", title: "Follow up", body: "check the annex", tags: ["task"], created: "2026-09-20T11:00:00Z" }],
+    links: [
+      { id: "l1", from: "i1", to: "i2", relation: "supports", origin: "human" },
+      { id: "l2", from: "i3", to: "i1", relation: "contradicts", origin: "auto" },
+    ],
+  };
+  const sections = S.annotationSections(rec, { linkTitle: (l, other) => "title of " + other });
+  assert.deepEqual(sections.map((s) => s.kind), ["comments", "notes", "links"]);
+  assert.equal(sections[0].count, 1);
+  assert.equal(sections[0].items[0].head, "analyst");
+  assert.equal(sections[1].items[0].head, "Follow up");
+  assert.equal(sections[1].items[0].meta, "task");
+  assert.equal(sections[2].items[0].head, "title of i2");
+  assert.equal(sections[2].items[0].incoming, false);
+  assert.equal(sections[2].items[1].head, "title of i3");
+  assert.equal(sections[2].items[1].incoming, true);
+  assert.equal(sections[2].items[1].relation, "contradicts");
+});
+
+test("annotationSections omits empty kinds and defaults missing fields", () => {
+  assert.deepEqual(S.annotationSections({ id: "i1" }), []);
+  const [comments] = S.annotationSections({ id: "i1", comments: [{ body: "hi" }] });
+  assert.equal(comments.items[0].head, "anonymous");
+  assert.equal(comments.items[0].when, "");
+});
+
+test("timelineGroups keeps order and splits consecutive days", () => {
+  const items = [
+    { id: "a", published: "2026-09-20T12:00:00Z" },
+    { id: "b", published: "2026-09-20T08:00:00Z" },
+    { id: "c", published: "2026-09-19T23:00:00Z" },
+    { id: "d" },
+  ];
+  const groups = S.timelineGroups(items);
+  assert.deepEqual(groups.map((g) => g.label), ["2026-09-20", "2026-09-19", "undated"]);
+  assert.deepEqual(groups[0].items.map((i) => i.id), ["a", "b"]);
+  assert.deepEqual(groups[2].items.map((i) => i.id), ["d"]);
+});

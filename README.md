@@ -12,8 +12,7 @@ stenella is a single Go server with **two purposes**:
 2. **An open-source intelligence (OSINT) platform** — the **more important** purpose: it
    **combines many sources into one feed**, lets an analyst **link, comment on and annotate**
    what it collects, **group and search** it, and **generate insights from a set of rules** —
-   then presents it all through a **dashboard**, a **feed/timeline**, a **map** and an
-   **information tree**.
+   then presents it all through a **dashboard**, a **map** and a **timeline**.
 
 The two are the same server: stenella is an **atp application** — atp is embedded in-process
 and provides the fileserver, the serverless-function registry, the secret vault, the storage
@@ -46,8 +45,9 @@ A running stenella is **one Go binary**. Start it, point a browser at it, and yo
   being stored);
 - **runs rule sets** over the graph to produce **insights** — the step that turns raw
   information into intelligence;
-- shows all of it through four coordinated views (dashboard, feed/timeline, map, information
-  tree) plus the smaller tools an analyst actually uses;
+- shows all of it through three coordinated views — **dashboard** (indicators, charts and the
+  insight queue), **map** and **timeline** — with search, the information tree, source
+  management, exports and the atp console as panels inside the timeline;
 - and, because it embeds **atp**, exposes **atp itself** — its hosted applications, secrets,
   functions, and the song/pod/shepherd surfaces — through the same server and the same
   interface.
@@ -369,11 +369,17 @@ rule "cross-source convergence":
   then  insight severity=high  "Acme Corp activity cluster"
 ```
 
-A rule's conditions are **tags** (all, or any), **sources** and **entities**, plus a time
-**window** and the thresholds **minItems** / **minSources**. The engine is deliberately small
-and explainable — which is also its current limit: there is no condition over a link's
-relation, and no "first mention of a place" state, so rules of that shape are not expressible
-today.
+A rule's conditions are **tags** (all, or any), **sources**, **entities**, a minimum
+**source reliability** (Admiralty A–F), the **relation** of a link an item participates in
+(optionally narrowed to `auto` or `human` links), plus a time **window** and the thresholds
+**minItems** / **minSources**. The engine is deliberately small and explainable, and each
+condition is a graph fact the store already holds: a reliability floor reads the source
+record, and a relation condition reads the same link table the analyst edits. What remains
+outside the engine is stateful novelty ("first mention of a place"), which would need a
+per-entity timeline rather than a query over current records.
+
+For example, a rule may require a **grade ≥ B** source and a **human** `supports` link, so
+corroboration by a trustworthy source is not diluted by every weak echo of the same story.
 
 Each insight **cites** the items, sources and rule that produced it and carries a **severity**
 (`info` | `low` | `medium` | `high` | `critical`) and a **timestamp**, so an analyst can
@@ -413,7 +419,7 @@ you can read. The model is intentionally small and graph-shaped:
 | `comment` | an annotation on an item | id, item, author (the analyst), body, created |
 | `note` | analyst free text | id, subject (item or entity), title, body, tags |
 | `group` | a saved query / watchlist | id, name, query, tags, colour |
-| `rule` | a rule set | id, name, text, severity, window, tags, sources, entities, matchAll, minItems, minSources |
+| `rule` | a rule set | id, name, text, severity, window, tags, sources, entities, matchAll, minItems, minSources, minReliability, relations, linkOrigin |
 | `insight` | a rule-produced conclusion | id, rule, title, text, severity, items, sources, count, status, reason, noteId |
 
 Two refinements of the "normalised item" shape are worth naming, because they are what makes
@@ -536,9 +542,10 @@ it:
 - **Provenance is always attached.** Every item carries its source(s); every insight cites the
   items, links and rule that produced it.
 - **Source reliability is recorded, not assumed.** Each source carries an Admiralty-style grade
-  (A–F), visible in the Sources view and the operator console. Rules cannot yet weight by it
-  (their conditions are tags, sources and entities), and the grade is not repeated on every
-  item.
+  (A–F), visible in the Sources view and the operator console, and a rule can require a
+  **minimum grade**; an item qualifies when at least one of its sources (its own or an
+  attribution) meets it, so a good source is not lost because a weak one also ran the story.
+  An unknown grade is treated as F — unknown is never assumed reliable.
 - **Cross-source corroboration is measurable.** Because duplicates collapse with all their
   attributions, and entities are shared, "one source vs many" is queryable.
 - **Human judgement is kept.** Auto-links and auto-insights are labelled `auto` and can be
@@ -699,8 +706,9 @@ from it, so nothing here reads as more than it is.
 | Processing: normalise, de-duplicate, classify, entity + coordinate extraction, candidate links | as described, except candidate links are proposed from **shared entities only** (no near-duplicate or explicit-reference detection) |
 | Analysis: links, comments, notes | Links are **item↔item** (no item→URL link); comments attach to **items** (not links/groups/insights) |
 | Groups, search | Groups are **saved queries**; search is **server-side** over title/summary/source + operators. `author:`/`host:` are recognised but **unanswerable** (neither is stored) and are reported in `notes` |
-| Insight rules | Tags/sources/entities + window + minItems/minSources. No link-relation or place-novelty conditions; no reliability weighting |
-| Dissemination: feed, exports, shares | Exports are the sanitised **item** projection (JSON + CSV); shares are capability tokens targeting item/group/insight/collection, revocable, **not rate-limited** |
+| Insight rules | Tags/sources/entities + window + minItems/minSources, plus a **minimum source reliability** (A–F) and **link-relation** conditions (optionally narrowed to `auto`/`human`). No place-novelty conditions (they need per-entity history) |
+| Dissemination: feed, exports, shares | Exports are the sanitised **item** projection (JSON + CSV) written by pod's shared `ExportTable`; shares are capability tokens targeting item/group/insight/collection, revocable, **not rate-limited** |
+| Platform health and annotations | `/stenella/api/health` reports the shared `atp.Server.Health()` component list (`?check=1` for a live probe); the views' annotation and timeline grouping come from the shared `song/viewkit` |
 | Views | One embedded **shell** + client-side rendering from the JSON endpoints (not Go templates); the world outline is a **coarse** offline polygon set; there is **no tile layer and no geocoder** |
 | Storage | Readable XML records; pod's optional at-rest encryption is available but **off** (no per-field ciphertext, no browser-held content key) |
 | Scheduling | `every` is recorded per source; collection is **triggered** (no background scheduler) |

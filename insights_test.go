@@ -620,3 +620,199 @@ func TestRuleAndInsightAPISurface(t *testing.T) {
 		t.Error("rule still stored after deletion")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// STX07 — reliability weighting and link-relation conditions
+// ---------------------------------------------------------------------------
+
+func TestReliabilityRankTreatsUnknownAsWeakest(t *testing.T) {
+	if reliabilityRank("A") >= reliabilityRank("B") || reliabilityRank("B") >= reliabilityRank("F") {
+		t.Error("grades do not sort A … F")
+	}
+	if reliabilityRank("") != reliabilityRank("F") || reliabilityRank("junk") != reliabilityRank("F") {
+		t.Error("an unknown grade must rank as F")
+	}
+	if g, ok := normalizeReliability(" b "); !ok || g != "B" {
+		t.Errorf("normalizeReliability(\" b \") = %q, %v", g, ok)
+	}
+	if _, ok := normalizeReliability("Z"); ok {
+		t.Error("normalizeReliability accepted an invalid grade")
+	}
+}
+
+func TestEvaluateReliabilityFloor(t *testing.T) {
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	items := []*Item{
+		{ID: "good", Source: "Reliable"},
+		{ID: "weak", Source: "Weak"},
+		{ID: "unknown", Source: "Unlisted"},
+		{ID: "corroborated", Source: "Weak", Attributions: []string{"Weak", "Reliable"}},
+	}
+	env := &evalEnv{
+		now: now,
+		reliability: map[string]int{
+			"reliable": reliabilityRank("A"),
+			"weak":     reliabilityRank("E"),
+		},
+		links: map[string]map[string]bool{},
+	}
+	got := idsOf(evaluateWith(&Rule{MinReliability: "B"}, items, env))
+	if strings.Join(got, ",") != "good,corroborated" {
+		t.Errorf("matches = %v, want the reliable source and the corroborated item", got)
+	}
+	if got := idsOf(evaluateWith(&Rule{MinReliability: "F"}, items, env)); len(got) != 4 {
+		t.Errorf("grade F should admit everything, got %v", got)
+	}
+}
+
+func TestEvaluateLinkRelationConditions(t *testing.T) {
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	items := []*Item{
+		{ID: "a", Source: "CBC"},
+		{ID: "b", Source: "CBC"},
+		{ID: "c", Source: "CBC"},
+		{ID: "d", Source: "CBC"},
+	}
+	env := &evalEnv{
+		now:         now,
+		reliability: map[string]int{"cbc": reliabilityRank("B")},
+		links: map[string]map[string]bool{
+			"a": {"supports": true, "supports|human": true},
+			"b": {"supports": true, "supports|human": true},
+			"c": {"contradicts": true, "contradicts|auto": true},
+			"d": {},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		rule   Rule
+		wanted []string
+	}{
+		{"relation either direction", Rule{Relations: []string{"supports"}}, []string{"a", "b"}},
+		{"origin narrows", Rule{Relations: []string{"supports"}, LinkOrigin: "human"}, []string{"a", "b"}},
+		{"wrong origin matches nothing", Rule{Relations: []string{"supports"}, LinkOrigin: "auto"}, nil},
+		{"auto link", Rule{Relations: []string{"contradicts"}, LinkOrigin: "auto"}, []string{"c"}},
+		{"relations are a set", Rule{Relations: []string{"contradicts", "supports"}}, []string{"a", "b", "c"}},
+		{"no link matches nothing", Rule{Relations: []string{"duplicates"}}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := idsOf(evaluateWith(&c.rule, items, env))
+			if strings.Join(got, ",") != strings.Join(c.wanted, ",") {
+				t.Errorf("matches = %v, want %v", got, c.wanted)
+			}
+		})
+	}
+}
+
+func TestRunRulesUsesStoreReliabilityAndLinks(t *testing.T) {
+	a := analyseFixture(t)
+	now := time.Now().UTC()
+
+	for _, src := range []*Source{
+		{Name: "Reliable", URL: "https://example.org/a.xml", Kind: sourceKindFeed,
+			Collection: "news", Reliability: "A", Enabled: true},
+		{Name: "Weak", URL: "https://example.org/b.xml", Kind: sourceKindFeed,
+			Collection: "news", Reliability: "E", Enabled: true},
+	} {
+		if err := a.store.PutSource(src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	putItem(t, a.store, "trusted", "Trusted report", "Reliable", "news", now.Add(-time.Hour), []string{"cyber"})
+	putItem(t, a.store, "untrusted", "Untrusted report", "Weak", "news", now.Add(-time.Hour), []string{"cyber"})
+	if err := a.store.PutLink(&Link{From: "trusted", To: "untrusted", Relation: "supports", Origin: "human"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rule := &Rule{
+		Name: "Corroborated, reliable and linked", Text: "…", Severity: "high", Enabled: true,
+		MinItems: 1, MinReliability: "B", Relations: []string{"supports"}, LinkOrigin: "human",
+	}
+	if err := a.store.PutRule(rule); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.runRules("all"); err != nil {
+		t.Fatal(err)
+	}
+	insights, err := a.store.Insights("new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("insights = %d, want 1", len(insights))
+	}
+	// Both items carry the link, but only "trusted" comes from a grade ≥ B.
+	if strings.Join(insights[0].Items, ",") != "trusted" {
+		t.Errorf("citations = %v, want only the reliable endpoint", insights[0].Items)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// STX08 — rule vocabulary is validated at creation, health is the platform's
+// ---------------------------------------------------------------------------
+
+func TestCreateRuleValidatesReliabilityAndLinks(t *testing.T) {
+	srv, _ := newTestPlatform(t)
+
+	code, body := call(t, srv, http.MethodPost, "/stenella/api/rules",
+		`{"name":"bad grade","minReliability":"Z"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("invalid grade status = %d: %s", code, body)
+	}
+	code, body = call(t, srv, http.MethodPost, "/stenella/api/rules",
+		`{"name":"bad origin","linkOrigin":"robot"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("invalid origin status = %d: %s", code, body)
+	}
+
+	code, body = call(t, srv, http.MethodPost, "/stenella/api/rules",
+		`{"name":"reliable and linked","minReliability":"b","relations":["Supports","supports",""],"linkOrigin":"Human"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("valid rule status = %d: %s", code, body)
+	}
+	rule := mustJSON(t, body)
+	if rule["minReliability"] != "B" || rule["linkOrigin"] != "human" {
+		t.Errorf("rule was not normalised: %v", rule)
+	}
+	rels, _ := rule["relations"].([]any)
+	if len(rels) != 1 || rels[0] != "supports" {
+		t.Errorf("relations = %v, want one de-duplicated \"supports\"", rule["relations"])
+	}
+}
+
+func TestHealthReportsPlatformComponents(t *testing.T) {
+	srv, _ := newTestPlatform(t)
+
+	code, body := call(t, srv, http.MethodGet, "/stenella/api/health", "")
+	if code != http.StatusOK {
+		t.Fatalf("health status = %d: %s", code, body)
+	}
+	h := mustJSON(t, body)
+	if h["ok"] != true {
+		t.Errorf("ok = %v", h["ok"])
+	}
+	components, _ := h["components"].([]any)
+	if len(components) == 0 {
+		t.Fatalf("health carries no components: %s", body)
+	}
+	names := map[string]bool{}
+	for _, raw := range components {
+		c, _ := raw.(map[string]any)
+		if name, _ := c["name"].(string); name != "" {
+			names[name] = true
+		}
+	}
+	for _, want := range []string{"atp", "pod", "song", "shepherd", "secrets", "registry"} {
+		if !names[want] {
+			t.Errorf("health is missing component %q", want)
+		}
+	}
+
+	code, body = call(t, srv, http.MethodGet, "/stenella/api/health?check=1", "")
+	if code != http.StatusOK || !strings.Contains(body, `"failures"`) {
+		t.Errorf("probe health = %d: %s", code, body)
+	}
+}
