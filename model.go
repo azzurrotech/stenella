@@ -177,6 +177,15 @@ type Rule struct {
 	Relations  []string `json:"relations,omitempty"`
 	LinkOrigin string   `json:"linkOrigin,omitempty"` // auto | human
 
+	// Pattern is a regex pattern matched against the item's title+summary body.
+	// When set, the item must contain a match for this rule to fire.
+	// Use together with Window to auto-link articles/comments within a time period.
+	Pattern string `json:"pattern,omitempty"`
+
+	// CaseSensitive controls whether the Pattern regex is case-sensitive.
+	// Defaults to false (case-insensitive matching).
+	CaseSensitive bool `json:"caseSensitive,omitempty"`
+
 	Created time.Time `json:"created,omitempty"`
 }
 

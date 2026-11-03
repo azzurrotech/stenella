@@ -10,10 +10,10 @@ require (
 
 require azzurrotech/song v0.0.0 // indirect
 
-replace azzurrotech/atp => ./atp
+replace azzurrotech/atp => ../atp
 
-replace azzurrotech/pod => ./atp/pod
+replace azzurrotech/pod => ../pod
 
-replace azzurrotech/shepherd => ./atp/shepherd
+replace azzurrotech/shepherd => ../shepherd
 
-replace azzurrotech/song => ./atp/song
+replace azzurrotech/song => ../song

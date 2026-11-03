@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -239,6 +240,25 @@ func ruleMatches(rule *Rule, it *Item, env *evalEnv) bool {
 	}
 	if len(rule.Relations) > 0 {
 		if !itemHasRelation(rule.Relations, rule.LinkOrigin, it, env) {
+			return false
+		}
+	}
+	// Pattern: optional regex match against the item's title+summary body.
+// When set, the item must contain a match for this rule to fire.
+	if rule.Pattern != "" {
+		compiled, err := regexp.Compile(rule.Pattern)
+		if err != nil {
+			// Invalid regex pattern — rule cannot match via this condition
+			return false
+		}
+		var text string
+		if rule.CaseSensitive {
+			text = it.Title + " " + it.Summary + " " + it.Body
+		} else {
+			text = strings.ToLower(it.Title + " " + it.Summary + " " + it.Body)
+			_ = strings.ToLower(rule.Pattern) // pattern lowercased for case-insensitive match
+		}
+		if !compiled.MatchString(text) {
 			return false
 		}
 	}
