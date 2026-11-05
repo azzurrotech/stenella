@@ -130,6 +130,10 @@
         </div>
         <p class="muted">Click a circle to identify what it holds; the selected circle is drawn in blue. Every item named here opens in the timeline. The base map is bundled and needs no network.</p>
         <div id="map-info" class="card" aria-live="polite">Select a marker to see the item.</div>
+        <div class="row" style="margin-top: 0.5rem;">
+          <button type="button" id="extract-geo" class="primary" style="margin-bottom: 0.5rem;">Extract Geo from Items</button>
+          <span id="extract-geo-msg" class="muted"></span>
+        </div>
       </div>
     </details>
   </section>
@@ -235,11 +239,36 @@
       </div>
     </details>
   </section>
-</main>
+
+
+<!-- Rules view -->
+        <section id="view-rules" class="view" hidden aria-labelledby="h-rules">
+          <details class="sec" open>
+            <summary><h2 id="h-rules">Rules</h2></summary>
+            <div class="sec-body">
+              <div class="row">
+                <label>Name
+                  <input type="text" id="rule-name" placeholder="Rule name" size="20">
+                </label>
+                <label>Pattern (regexp)
+                  <input type="text" id="rule-pattern" placeholder="e.g. \brisk\b|cyber incident" size="40">
+                </label>
+                <label>Case sensitive
+                  <input type="checkbox" id="rule-case-sensitive">
+                </label>
+                <button type="button" id="create-rule" class="primary">Create Rule</button>
+                <button type="button" id="cancel-rule" style="margin-left: 0.5rem;">Cancel</button>
+              </div>
+              <div id="rules-list" style="margin-top: 1rem; max-height: 300px; overflow-y: auto;"></div>
+            </div>
+          </details>
+        </section></main>
 
 <script src="/_song/viewkit.js" defer></script>
 <script src="lib.js" defer></script>
 <script src="world.js" defer></script>
 <script src="app.js" defer></script>
+
+
 </body>
 </html>

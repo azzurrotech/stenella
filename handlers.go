@@ -521,6 +521,96 @@ func (a *App) createRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, rule)
 }
 
+// updateRule updates an existing rule with new values.
+func (a *App) updateRule(w http.ResponseWriter, r *http.Request) {
+	id := atp.PathParam(r, "id")
+	rule, err := a.store.Rule(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "rule not found")
+		return
+	}
+	var in struct {
+		Name       string `json:"name,omitempty"`
+		Text       string `json:"text,omitempty"`
+		Severity   string `json:"severity,omitempty"`
+		Enabled    bool   `json:"enabled,omitempty"`
+		MinReliability string `json:"minReliability,omitempty"`
+		Pattern    string `json:"pattern,omitempty"`
+		CaseSensitive   bool   `json:"caseSensitive,omitempty"`
+		Sources    []string `json:"sources,omitempty"`
+		Entities   []string `json:"entities,omitempty"`
+		Relations  []string `json:"relations,omitempty"`
+		LinkOrigin string `json:"linkOrigin,omitempty"`
+		MinItems   int      `json:"minItems,omitempty"`
+		MinSources int      `json:"minSources,omitempty"`
+		MatchAll   bool     `json:"matchAll,omitempty"`
+		Window     string   `json:"window,omitempty"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.Name != "" {
+		rule.Name = cleanInline(in.Name, 120)
+	}
+	if in.Text != "" {
+		rule.Text = cleanInline(in.Text, 300)
+	}
+	if in.Severity != "" {
+		rule.Severity = severityOr(in.Severity)
+	}
+	if in.Enabled {
+		rule.Enabled = in.Enabled
+	}
+	if in.MinReliability != "" {
+		grade, ok := normalizeReliability(in.MinReliability)
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "minReliability must be a grade from A to F")
+			return
+		}
+		rule.MinReliability = grade
+	}
+	if in.Pattern != "" {
+		rule.Pattern = in.Pattern
+	}
+	if in.CaseSensitive {
+		rule.CaseSensitive = in.CaseSensitive
+	}
+	if in.Sources != nil {
+		rule.Sources = in.Sources
+	}
+	if in.Entities != nil {
+		rule.Entities = in.Entities
+	}
+	if in.Relations != nil {
+		rule.Relations = normalizeRelations(in.Relations)
+	}
+	if in.LinkOrigin != "" {
+		origin := strings.ToLower(strings.TrimSpace(in.LinkOrigin))
+		if origin != "" && origin != "auto" && origin != "human" {
+			writeErr(w, http.StatusBadRequest, "linkOrigin must be auto or human")
+			return
+		}
+		rule.LinkOrigin = origin
+	}
+	if in.MinItems >= 0 {
+		rule.MinItems = in.MinItems
+	}
+	if in.MinSources >= 0 {
+		rule.MinSources = in.MinSources
+	}
+	if in.MatchAll {
+		rule.MatchAll = in.MatchAll
+	}
+	if in.Window != "" {
+		rule.Window = in.Window
+	}
+	if err := a.store.PutRule(rule); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
 // normalizeRelations lower-cases, de-duplicates and drops empty relations.
 func normalizeRelations(in []string) []string {
 	out := make([]string, 0, len(in))
@@ -546,8 +636,9 @@ func (a *App) getRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rule)
 }
 
-// ruleAction runs, enables or disables a rule. Running it evaluates the rule
-// over the whole collection and writes its insight.
+// ruleAction runs, enables, disables or updates a rule. Running it evaluates the
+// rule over the whole collection and writes its insight. Updates modify rule
+// fields such as name, text, pattern, conditions, etc.
 func (a *App) ruleAction(w http.ResponseWriter, r *http.Request) {
 	id := atp.PathParam(r, "id")
 	var in struct {
@@ -586,8 +677,89 @@ func (a *App) ruleAction(w http.ResponseWriter, r *http.Request) {
 		rule.Enabled = false
 		_ = a.store.PutRule(rule)
 		writeJSON(w, http.StatusOK, rule)
+	case "update":
+		var in struct {
+			Name         string `json:"name,omitempty"`
+			Text         string `json:"text,omitempty"`
+			Severity     string `json:"severity,omitempty"`
+			Enabled      bool   `json:"enabled,omitempty"`
+			MinReliability string `json:"minReliability,omitempty"`
+			Pattern      string `json:"pattern,omitempty"`
+			CaseSensitive   bool   `json:"caseSensitive,omitempty"`
+			Sources      []string `json:"sources,omitempty"`
+			Entities     []string `json:"entities,omitempty"`
+			Relations    []string `json:"relations,omitempty"`
+			LinkOrigin   string `json:"linkOrigin,omitempty"`
+			MinItems     int      `json:"minItems,omitempty"`
+			MinSources   int      `json:"minSources,omitempty"`
+			MatchAll     bool     `json:"matchAll,omitempty"`
+			Window       string   `json:"window,omitempty"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if in.Name != "" {
+			rule.Name = cleanInline(in.Name, 120)
+		}
+		if in.Text != "" {
+			rule.Text = cleanInline(in.Text, 300)
+		}
+		if in.Severity != "" {
+			rule.Severity = severityOr(in.Severity)
+		}
+		if in.Enabled {
+			rule.Enabled = in.Enabled
+		}
+		if in.MinReliability != "" {
+			grade, ok := normalizeReliability(in.MinReliability)
+			if !ok {
+				writeErr(w, http.StatusBadRequest, "minReliability must be a grade from A to F")
+				return
+			}
+			rule.MinReliability = grade
+		}
+		if in.Pattern != "" {
+			rule.Pattern = in.Pattern
+		}
+		if in.CaseSensitive {
+			rule.CaseSensitive = in.CaseSensitive
+		}
+		if in.Sources != nil {
+			rule.Sources = in.Sources
+		}
+		if in.Entities != nil {
+			rule.Entities = in.Entities
+		}
+		if in.Relations != nil {
+			rule.Relations = normalizeRelations(in.Relations)
+		}
+		if in.LinkOrigin != "" {
+			origin := strings.ToLower(strings.TrimSpace(in.LinkOrigin))
+			if origin != "" && origin != "auto" && origin != "human" {
+				writeErr(w, http.StatusBadRequest, "linkOrigin must be auto or human")
+				return
+			}
+			rule.LinkOrigin = origin
+		}
+		if in.MinItems >= 0 {
+			rule.MinItems = in.MinItems
+		}
+		if in.MinSources >= 0 {
+			rule.MinSources = in.MinSources
+		}
+		if in.MatchAll {
+			rule.MatchAll = in.MatchAll
+		}
+		if in.Window != "" {
+			rule.Window = in.Window
+		}
+		if err := a.store.PutRule(rule); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, rule)
 	default:
-		writeErr(w, http.StatusBadRequest, "action must be run, enable or disable")
+		writeErr(w, http.StatusBadRequest, "action must be run, enable, disable or update")
 	}
 }
 
@@ -761,6 +933,24 @@ func (a *App) stats(w http.ResponseWriter, r *http.Request) {
 		"perCategory":   perCategory,
 		"withGeo":       geoCount,
 	})
+}
+
+// extractGeoFromText extracts geo coordinates from item text using the server-side
+// extractGeo function. This is useful for items that were imported without geo data
+// but contain lat,lon references in their title/summary/body.
+func (a *App) extractGeoFromText(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Text string `json:"text"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	lat, lon, ok := extractGeo(in.Text)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "no lat,lon pair found in text")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"geo": formatGeo(lat, lon), "ok": true})
 }
 
 func (a *App) health(w http.ResponseWriter, r *http.Request) {

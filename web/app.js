@@ -790,7 +790,8 @@
     ctx.lineWidth = 1;
     ctx.fillStyle = "rgba(127,127,127,.9)";
     ctx.font = "11px system-ui, sans-serif";
-    ctx.fillText(mapClusters.length + " clusters, " + mapItemPoints.length + " items from " + mapItems.filter((i) => i.hasGeo).length + " placed items", 8, h - 8);
+    const hasGeoCount = mapItems.filter((i) => i.hasGeo).length;
+    ctx.fillText(mapClusters.length + " clusters, " + mapItemPoints.length + " items from " + hasGeoCount + " placed items", 8, h - 8);
 
     if (selectedCluster) {
       cv.dataset.selectedItems = selectedCluster.items.map((i) => i.id).join(",");
@@ -851,6 +852,41 @@
       layoutMap();
       drawMap();
       if (params && params.item) focusItemOnMap(params.item);
+    } catch (err) {
+      showError($("map-info"), err);
+    }
+  }
+
+  // --- extract geo from items ------------------------------------------------
+
+  async function extractGeoFromItems() {
+    if (!confirm("Extract geo coordinates from all item text? This may take a moment.")) return;
+    try {
+      const out = await api("/stenella/api/items?limit=1000");
+      const items = out.items || [];
+      let updated = 0;
+      for (const it of items) {
+        if (it.Geo === "") {
+          var text = it.Title + " " + (it.Summary || "") + " " + (it.Body || "");
+          // Use the server-side extractGeo endpoint
+          try {
+            const res = await api("/stenella/api/items/" + it.ID + "/extract-geo", { method: "POST", body: { text: text } });
+            if (res && res.geo) {
+              // Update the item with extracted geo
+              await api("/stenella/api/items/" + it.ID, {
+                method: "PATCH",
+                body: { Geo: res.geo }
+              });
+              updated++;
+            }
+          } catch (e) {
+            // Item-level extraction failed, try pipeline extraction
+            // The pipeline already handles this during collection
+          }
+        }
+      }
+      loadMap();
+      alert("Updated " + updated + " items with geo coordinates");
     } catch (err) {
       showError($("map-info"), err);
     }
@@ -1257,7 +1293,82 @@
         await loadTimeline(routeParams());
       } catch (err) { $("opml-result").textContent = err.message; }
     });
+    $("src-opml").addEventListener("click", async () => {
+      const doc = $("opml").value.trim();
+      if (!doc) { $("opml-result").textContent = "paste an OPML document first"; return; }
+      try {
+        const res = await api("/stenella/api/opml", {
+          method: "POST",
+          headers: { "Content-Type": "application/xml" },
+          body: doc,
+        });
+        $("opml-result").textContent = "added " + res.added + ", skipped " + res.skipped;
+        await loadTimeline(routeParams());
+      } catch (err) { $("opml-result").textContent = err.message; }
+    });
     $("brief-print").addEventListener("click", printBriefing);
+
+    // Extract geo from all items
+    $("extract-geo").addEventListener("click", extractGeoFromItems);
+    // Rule management
+    function createRule() {
+      const name = $('rule-name').value.trim();
+      const pattern = $('rule-pattern').value.trim();
+      const caseSensitive = $('rule-case-sensitive').checked;
+      if (!name || !pattern) {
+        alert('Name and pattern are required');
+        return;
+      }
+      post('/stenella/api/rules', {
+        name: name,
+        text: name + ' — matched by pattern',
+        severity: 'medium',
+        enabled: true,
+        pattern: pattern,
+        caseSensitive: caseSensitive
+      }).then(() => {
+        loadRules();
+        $('rule-form').parentNode.removeChild($('rule-form'));
+      }).catch(e => {
+        showError($('rules-list'), e);
+      });
+    }
+
+    function loadRules() {
+      api('/stenella/api/rules').then((rules) => {
+        const list = $('rules-list');
+        clear(list);
+        if (!rules || rules.length === 0) {
+          list.innerHTML = '<p class='muted'>no rules yet</p>';
+          return;
+        }
+        rules.rules.forEach((rule) => {
+          const div = $('el')('div', { class: 'rule-item' },
+            $('el')('span', { class: 'rule-name' }, rule.name || '(unnamed)'),
+            $('el')('span', { class: 'rule-pattern' }, 'pattern: ' + (rule.pattern || '')),
+            $('el')('span', { class: 'rule-enabled' }, rule.enabled ? 'enabled' : 'disabled'),
+            $('el')('span', { class: 'rule-count' }, 'fires: ' + (rule.count || 0))
+          );
+          list.appendChild(div);
+        });
+      }).catch(e => {
+        showError($('rules-list'), e);
+      });
+    }
+
+    function clear(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    $('create-rule').addEventListener('click', createRule);
+    $('cancel-rule').addEventListener('click', () => {
+      $('rule-form').parentNode.removeChild($('rule-form'));
+    });
+    $('rule-form-close').addEventListener('click', () => {
+      $('rule-form').parentNode.removeChild($('rule-form'));
+    });
+
+    loadRules();
 
     // Every record reference is followed by the same gesture: open the
     // timeline and put that record in focus. The hash still drives ordinary

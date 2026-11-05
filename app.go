@@ -145,6 +145,9 @@ func (a *App) routes() []route {
 		{"POST", "/stenella/api/rules/{id}", a.ruleAction},
 		{"DELETE", "/stenella/api/rules/{id}", a.deleteRule},
 
+		// --- geo extraction -------------------------------------------------
+		{"POST", "/stenella/api/items/{id}/extract-geo", a.extractGeoFromText},
+
 		// --- insights -------------------------------------------------------
 		{"GET", "/stenella/api/insights", a.listInsights},
 		{"POST", "/stenella/api/insights/{id}", a.insightAction},
