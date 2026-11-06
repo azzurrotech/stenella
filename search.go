@@ -21,9 +21,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"azzurrotech/pod"
-	"azzurrotech/shepherd/capability"
 )
 
 // ---------------------------------------------------------------------------
@@ -377,11 +374,11 @@ func (a *App) exportCSV(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", pod.ContentType(pod.FormatCSV))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// pod.ExportTable writes the UTF-8 BOM and quotes any field that needs it,
+	// writeCSVTable writes the UTF-8 BOM and quotes any field that needs it,
 	// so the CSV shape is the platform's, not a second ad-hoc writer.
-	if err := pod.ExportTable(w, csvHeader, rows, pod.ExportOptions{Format: pod.FormatCSV}); err != nil {
+	if err := writeCSVTable(w, csvHeader, rows); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
 }
@@ -644,12 +641,12 @@ func (a *App) createShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttl := capability.ParseTTL(in.TTL, capability.DefaultTTL)
+	ttl := ParseTTL(in.TTL, DefaultShareTTL)
 
-	share, err := capability.Issue(a.srv.Shepherd().Manager(), capability.IssueOptions{
-		Target:  capability.Target{Kind: in.Kind, ID: in.ID},
+	share, err := a.srv.Shepherd().Issue(ShareOptions{
+		Kind:    in.Kind,
+		ID:      in.ID,
 		TTL:     ttl,
-		Issuer:  a.srv.Shepherd().Issuer(),
 		Subject: "stenella-share",
 		Scopes:  []string{"stenella", "share"},
 	})
@@ -666,8 +663,8 @@ func (a *App) createShare(w http.ResponseWriter, r *http.Request) {
 		"subject":  share.Subject,
 		"issuedAt": share.IssuedAt,
 		"expires":  share.Expires,
-		"verify":   "/api/token/verify",
-		"revoke":   "/api/revoke",
+		"verify":   a.srv.Shepherd().Base() + "/api/token/verify",
+		"revoke":   a.srv.Shepherd().Base() + "/api/revoke",
 		"note": "a capability record; atp adds no access control to hosted " +
 			"resources, so the shareable feed stays readable by design",
 	})

@@ -1,9 +1,10 @@
-// app.go — stenella as an atp application.
+// app.go — stenella as a standalone service.
 //
-// Stenella owns no transport, no router and no security model: atp is the
-// server. This file constructs the platform on top of an *atp.Server — the pod
-// records, the collection engines, the routes — and is the only place that
-// knows about atp. Everything else in the package is the OSINT platform itself.
+// Stenella owns its transport and router; it reaches pod, song, shepherd and
+// atp over HTTP. This file constructs the platform on top of a *Server — the
+// pod records, the collection engines, the routes — and is the only place that
+// wires the platform together. Everything else in the package is the OSINT
+// platform itself.
 package main
 
 import (
@@ -17,12 +18,11 @@ import (
 	"sync"
 	"time"
 
-	"azzurrotech/atp"
 )
 
 // App is stenella: atp plus the OSINT platform.
 type App struct {
-	srv    *atp.Server
+	srv    *Server
 	store  *Store
 	client *http.Client
 
@@ -38,10 +38,10 @@ type App struct {
 	runMu sync.Mutex
 }
 
-// NewApp builds the platform on an atp server.
-func NewApp(srv *atp.Server) (*App, error) {
+// NewApp builds the platform on a standalone stenella server.
+func NewApp(srv *Server) (*App, error) {
 	if srv == nil {
-		return nil, fmt.Errorf("stenella: nil atp server")
+		return nil, fmt.Errorf("stenella: nil server")
 	}
 	store, err := NewStore(srv.Pod())
 	if err != nil {
@@ -56,8 +56,8 @@ func NewApp(srv *atp.Server) (*App, error) {
 	}, nil
 }
 
-// Server exposes the atp server the platform is attached to.
-func (a *App) Server() *atp.Server { return a.srv }
+// Server exposes the server the platform is attached to.
+func (a *App) Server() *Server { return a.srv }
 
 // Store exposes the record layer.
 func (a *App) Store() *Store { return a.store }
@@ -339,7 +339,7 @@ func collectionMatches(want, sourceCollection string) bool {
 // link-free, private-free feed the README describes: the format is the only
 // difference between the two.
 func (a *App) serveFeed(w http.ResponseWriter, r *http.Request) {
-	name := atp.PathParam(r, "name")
+	name := PathParam(r, "name")
 	collection, format := splitFeedName(name)
 	if collection == "" || format == "" {
 		writeErr(w, http.StatusNotFound, "expected /stenella/feeds/{collection}.xml or .json")

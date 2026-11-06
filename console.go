@@ -1,18 +1,18 @@
-// console.go — the easy-to-use interface over atp itself.
+// console.go — the easy-to-use interface over stenella and the platform.
 //
-// stenella is an atp application, so the platform's own surface (apps, the
-// function registry, the secrets vault, central head management, the header
-// policy, the encrypted static box) and its three sub-projects (song, pod,
-// shepherd) are part of what the operator has to be able to see and drive.
-// This file exposes each atp surface as a JSON document, and the front end
-// renders them as one console.
+// stenella runs as its own service now, so the console reports both what
+// stenella itself serves (apps, routes, head, header policy) and the platform
+// services it reaches over HTTP (atp's vault, pod's tables, song's silos,
+// shepherd's capabilities and firewall). Every remote call degrades to an empty
+// panel when the service is unreachable: a missing atp must not take the OSINT
+// platform with it.
 //
 // Two rules hold here:
 //
 //   - No secret value is ever read. The vault panel lists names, notes and
 //     timestamps only; the value stays server-side, exactly as atp promises.
 //   - Every panel reports what is actually mounted. A sub-project with no
-//     upstream configured reports shepherd's own \"no upstream\" answer rather
+//     upstream configured reports shepherd's own "no upstream" answer rather
 //     than a cheerful guess.
 package main
 
@@ -21,10 +21,6 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
-
-	"azzurrotech/atp"
-	"azzurrotech/pod"
-	"azzurrotech/shepherd/firewall"
 )
 
 // ConsolePlatform describes the running server.
@@ -48,8 +44,8 @@ type ConsoleSubProject struct {
 }
 
 type ConsoleSecrets struct {
-	Apps    []string                    `json:"apps"`
-	Listing map[string][]atp.SecretInfo `json:"listing"`
+	Apps    []string                `json:"apps"`
+	Listing map[string][]SecretInfo `json:"listing"`
 }
 
 type ConsoleHead struct {
@@ -65,7 +61,7 @@ type ConsoleSong struct {
 }
 
 type ConsolePod struct {
-	Tables []pod.TableInfo `json:"tables"`
+	Tables []TableInfo `json:"tables"`
 }
 
 type ConsoleShepherd struct {
@@ -75,18 +71,18 @@ type ConsoleShepherd struct {
 }
 
 type ConsoleFirewall struct {
-	DefaultAllow bool            `json:"defaultAllow"`
-	Rules        []firewall.Rule `json:"rules"`
+	DefaultAllow bool             `json:"defaultAllow"`
+	Rules        []map[string]any `json:"rules"`
 }
 
 type Console struct {
 	Platform    ConsolePlatform     `json:"platform"`
 	SubProjects []ConsoleSubProject `json:"subprojects"`
-	Apps        []atp.App           `json:"apps"`
-	Functions   []atp.Route         `json:"functions"`
+	Apps        []AppMeta           `json:"apps"`
+	Functions   []Route             `json:"functions"`
 	Secrets     ConsoleSecrets      `json:"secrets"`
 	Head        ConsoleHead         `json:"head"`
-	Headers     []atp.HeaderRule    `json:"headers"`
+	Headers     []HeaderRule        `json:"headers"`
 	Song        ConsoleSong         `json:"song"`
 	Pod         ConsolePod          `json:"pod"`
 	Shepherd    ConsoleShepherd     `json:"shepherd"`
@@ -98,18 +94,24 @@ type Console struct {
 // console builds the whole console document.
 func (a *App) console() Console {
 	srv := a.srv
-	c := Console{
+	version := "(unavailable)"
+	if st, err := srv.ATP().Platform(); err == nil && st.Version != "" {
+		version = st.Version
+	}
+	fwAllow, fwRules, _ := srv.Shepherd().Firewall()
+
+	return Console{
 		Platform: ConsolePlatform{
 			Name:       "atp",
 			App:        "stenella",
-			ATPVersion: atp.Version,
+			ATPVersion: version,
 			Addr:       srv.Addr(),
 			Root:       srv.Root(),
 			Encrypted:  srv.Encrypted(),
 		},
 		SubProjects: subProjects(),
 		Apps:        nonNilApps(srv.Apps().List()),
-		Functions:   nonNilRoutes(srv.Registry().Routes()),
+		Functions:   nonNilRoutes(srv.Routes()),
 		Secrets:     listSecrets(srv),
 		Head:        listHead(srv),
 		Headers:     nonNilRules(srv.Headers().Rules()),
@@ -117,13 +119,12 @@ func (a *App) console() Console {
 		Pod:         listPod(srv),
 		Shepherd:    listShepherd(srv),
 		Firewall: ConsoleFirewall{
-			DefaultAllow: srv.Firewall().DefaultAllow(),
-			Rules:        nonNilFirewall(srv.Firewall().Rules()),
+			DefaultAllow: fwAllow,
+			Rules:        nonNilFirewall(fwRules),
 		},
-		Static: nonNilStrings(srv.StaticBox().List()),
+		Static: listStatic(srv),
 		Counts: a.store.Counts(),
 	}
-	return c
 }
 
 // consoleAll answers the whole console document; the front end fetches it in
@@ -135,7 +136,7 @@ func (a *App) consoleAll(w http.ResponseWriter, r *http.Request) {
 // consoleSurface answers one panel. It exists so a view can refresh a single
 // panel without re-reading everything.
 func (a *App) consoleSurface(w http.ResponseWriter, r *http.Request) {
-	surface := atp.PathParam(r, "surface")
+	surface := PathParam(r, "surface")
 	if surface == "" {
 		a.consoleAll(w, r)
 		return
@@ -196,11 +197,11 @@ var subProjectMeta = map[string]struct {
 	},
 	"azzurrotech/atp": {
 		mounts:  []string{"/", "/api/functions", "/secrets", "/head", "/headers", "/_atp/static/"},
-		purpose: "the server: functions, vault, head/header management, apps, static box",
+		purpose: "the front door: functions, vault, head/header management, apps, static box",
 	},
 }
 
-// subProjects reports how atp and its three sub-projects were linked into this
+// subProjects reports how atp and its three sub-projects are linked into this
 // binary. The build info is read from the running executable, so the panel
 // shows the real answer — a locally-linked sub-project is reported as local,
 // with the path it was replaced by.
@@ -240,7 +241,7 @@ func subProjects() []ConsoleSubProject {
 		meta := subProjectMeta[p]
 		out = append(out, ConsoleSubProject{
 			Module:  p,
-			Version: "(embedded)",
+			Version: "(remote)",
 			Mounts:  meta.mounts,
 			Purpose: meta.purpose,
 		})
@@ -252,19 +253,22 @@ func subProjects() []ConsoleSubProject {
 // panel readers
 // ---------------------------------------------------------------------------
 
-func listSecrets(srv *atp.Server) ConsoleSecrets {
-	v := srv.Secrets()
-	apps := nonNilStrings(v.Apps())
-	sort.Strings(apps)
-	listing := map[string][]atp.SecretInfo{}
-	for _, app := range apps {
-		// List returns metadata only; the value is never read here.
-		listing[app] = nonNilSecretInfos(v.List(app))
+func listSecrets(srv *Server) ConsoleSecrets {
+	apps, listing, err := srv.ATP().Secrets()
+	if err != nil {
+		return ConsoleSecrets{Apps: []string{}, Listing: map[string][]SecretInfo{}}
 	}
-	return ConsoleSecrets{Apps: apps, Listing: listing}
+	sort.Strings(apps)
+	if listing == nil {
+		listing = map[string][]SecretInfo{}
+	}
+	for app, infos := range listing {
+		listing[app] = nonNilSecretInfos(infos)
+	}
+	return ConsoleSecrets{Apps: nonNilStrings(apps), Listing: listing}
 }
 
-func listHead(srv *atp.Server) ConsoleHead {
+func listHead(srv *Server) ConsoleHead {
 	h := srv.Head()
 	apps := nonNilStrings(srv.Apps().Names())
 	perApp := map[string][]string{}
@@ -280,47 +284,54 @@ func listHead(srv *atp.Server) ConsoleHead {
 	}
 }
 
-func listSong(srv *atp.Server) ConsoleSong {
-	song := srv.Song()
-	out := ConsoleSong{Root: song.Store().Root()}
-	if silos, err := song.Store().ListSilos(); err == nil {
+func listSong(srv *Server) ConsoleSong {
+	root, silos, err := srv.Song().Silos()
+	out := ConsoleSong{}
+	if err == nil {
+		out.Root = root
 		out.Silos = nonNilStrings(silos)
 	}
-	out.Components = nonNilStrings(song.Components().Names())
+	if comps, err := srv.Song().Components(); err == nil {
+		out.Components = nonNilStrings(comps)
+	} else {
+		out.Components = []string{}
+	}
 	return out
 }
 
-func listPod(srv *atp.Server) ConsolePod {
-	tables, err := srv.Pod().ListTables()
+func listPod(srv *Server) ConsolePod {
+	tables, err := srv.Pod().Tables()
 	if err != nil {
-		return ConsolePod{}
+		return ConsolePod{Tables: []TableInfo{}}
 	}
-	out := make([]pod.TableInfo, 0, len(tables))
+	out := make([]TableInfo, 0, len(tables))
 	for _, t := range tables {
-		info, err := srv.Pod().TableInfo(t)
-		if err != nil || info == nil {
-			out = append(out, pod.TableInfo{Name: t})
-			continue
-		}
-		out = append(out, *info)
+		out = append(out, t)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return ConsolePod{Tables: out}
 }
 
-func listShepherd(srv *atp.Server) ConsoleShepherd {
-	sh := srv.Shepherd()
+func listShepherd(srv *Server) ConsoleShepherd {
 	return ConsoleShepherd{
-		Issuer:  sh.Issuer(),
+		Issuer:  srv.Shepherd().Issuer(),
 		Gateway: "/gw/",
 		Capabilities: []string{
-			"capability tokens (issue, verify at /api/token/verify, revoke at /api/revoke)",
+			"capability tokens (issue at /api/keys, verify at /api/token/verify, revoke at /api/revoke)",
 			"the /gw/ gateway with upstreams (/api/upstreams)",
 			"rate limiting (/api/ratelimit/status)",
 			"the request firewall",
 			"magic links and JavaScript Web Crypto keys (/api/keys/magic, /api/keys/javascript)",
 		},
 	}
+}
+
+func listStatic(srv *Server) []string {
+	names, err := srv.ATP().Static()
+	if err != nil {
+		return []string{}
+	}
+	return nonNilStrings(names)
 }
 
 // ---------------------------------------------------------------------------
@@ -334,37 +345,37 @@ func nonNilStrings(in []string) []string {
 	return in
 }
 
-func nonNilApps(in []atp.App) []atp.App {
+func nonNilApps(in []AppMeta) []AppMeta {
 	if in == nil {
-		return []atp.App{}
+		return []AppMeta{}
 	}
 	return in
 }
 
-func nonNilRoutes(in []atp.Route) []atp.Route {
+func nonNilRoutes(in []Route) []Route {
 	if in == nil {
-		return []atp.Route{}
+		return []Route{}
 	}
 	return in
 }
 
-func nonNilRules(in []atp.HeaderRule) []atp.HeaderRule {
+func nonNilRules(in []HeaderRule) []HeaderRule {
 	if in == nil {
-		return []atp.HeaderRule{}
+		return []HeaderRule{}
 	}
 	return in
 }
 
-func nonNilFirewall(in []firewall.Rule) []firewall.Rule {
+func nonNilFirewall(in []map[string]any) []map[string]any {
 	if in == nil {
-		return []firewall.Rule{}
+		return []map[string]any{}
 	}
 	return in
 }
 
-func nonNilSecretInfos(in []atp.SecretInfo) []atp.SecretInfo {
+func nonNilSecretInfos(in []SecretInfo) []SecretInfo {
 	if in == nil {
-		return []atp.SecretInfo{}
+		return []SecretInfo{}
 	}
 	return in
 }

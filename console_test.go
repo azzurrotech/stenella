@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -30,7 +31,8 @@ var consolePanels = []string{
 }
 
 func TestConsoleReportsEveryATPSurface(t *testing.T) {
-	srv, app := newTestPlatform(t)
+	st := newTestStack(t)
+	srv, app := st.srv, st.app
 
 	code, body := call(t, srv, http.MethodGet, "/stenella/api/console", "")
 	if code != http.StatusOK {
@@ -140,7 +142,7 @@ func TestConsoleReportsEveryATPSurface(t *testing.T) {
 
 	// --- song -------------------------------------------------------------
 	song := doc["song"].(map[string]any)
-	if song["root"] != srv.Song().Store().Root() {
+	if song["root"] != st.songRoot {
 		t.Errorf("song root = %v", song["root"])
 	}
 	if comps, _ := song["components"].([]any); len(comps) == 0 {
@@ -262,15 +264,29 @@ func TestConsoleSurfaceEndpointsMatchTheDocument(t *testing.T) {
 // The console is a management surface: it may name a secret, but it must never
 // carry a secret value — not over HTTP, and not in the files it reads.
 func TestConsoleNeverLeaksASecretValue(t *testing.T) {
-	srv, _ := newTestPlatform(t)
+	st := newTestStack(t)
+	srv := st.srv
 
 	const (
 		secretApp   = "stenella"
 		secretName  = "upstream-api-key"
 		secretValue = "SUPER-SECRET-VALUE-1234567890"
 	)
-	if err := srv.Secrets().Set(secretApp, secretName, secretValue, "used by a test"); err != nil {
+	// the vault belongs to atp: write through its HTTP API
+	payload := strings.NewReader(`{"value":"` + secretValue + `","note":"used by a test"}`)
+	req, err := http.NewRequest(http.MethodPut, st.atpURL+"/secrets/"+secretApp+"/"+secretName, payload)
+	if err != nil {
+		t.Fatalf("set secret request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
 		t.Fatalf("set secret: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("set secret: HTTP %d", resp.StatusCode)
 	}
 
 	// the secret is named in the panel, with its note, and no value
@@ -297,8 +313,8 @@ func TestConsoleNeverLeaksASecretValue(t *testing.T) {
 	}
 
 	// and the value is not sitting in plaintext on disk either
-	vaultDir := filepath.Join(srv.Root(), "secrets")
-	err := filepath.WalkDir(vaultDir, func(path string, d fs.DirEntry, err error) error {
+	vaultDir := filepath.Join(st.atpRoot, "secrets")
+	err = filepath.WalkDir(vaultDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -317,7 +333,7 @@ func TestConsoleNeverLeaksASecretValue(t *testing.T) {
 
 	// the master secret itself must not appear anywhere in the console either
 	for i, b := range bodies {
-		if strings.Contains(b, "test-master-secret-at-least-32-bytes!!") {
+		if strings.Contains(b, st.atpSecret) {
 			t.Fatalf("console response %d exposes the master secret", i)
 		}
 	}

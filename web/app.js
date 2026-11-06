@@ -1293,19 +1293,6 @@
         await loadTimeline(routeParams());
       } catch (err) { $("opml-result").textContent = err.message; }
     });
-    $("src-opml").addEventListener("click", async () => {
-      const doc = $("opml").value.trim();
-      if (!doc) { $("opml-result").textContent = "paste an OPML document first"; return; }
-      try {
-        const res = await api("/stenella/api/opml", {
-          method: "POST",
-          headers: { "Content-Type": "application/xml" },
-          body: doc,
-        });
-        $("opml-result").textContent = "added " + res.added + ", skipped " + res.skipped;
-        await loadTimeline(routeParams());
-      } catch (err) { $("opml-result").textContent = err.message; }
-    });
     $("brief-print").addEventListener("click", printBriefing);
 
     // Extract geo from all items
@@ -1338,8 +1325,8 @@
       api('/stenella/api/rules').then((rules) => {
         const list = $('rules-list');
         clear(list);
-        if (!rules || rules.length === 0) {
-          list.innerHTML = '<p class='muted'>no rules yet</p>';
+        if (!rules || !rules.rules || rules.rules.length === 0) {
+          list.innerHTML = "<p class='muted'>no rules yet</p>";
           return;
         }
         rules.rules.forEach((rule) => {

@@ -1,26 +1,9 @@
 package main
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
-
-	"azzurrotech/pod"
 )
-
-// newTestStore returns a store over a fresh pod directory.
-func newTestStore(t *testing.T) *Store {
-	t.Helper()
-	p, err := pod.Open(filepath.Join(t.TempDir(), "pod"))
-	if err != nil {
-		t.Fatalf("pod.Open: %v", err)
-	}
-	s, err := NewStore(p)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	return s
-}
 
 // --- codec -----------------------------------------------------------------
 
@@ -198,13 +181,15 @@ func TestStoreCreatesEveryTableInTheModel(t *testing.T) {
 		tableSources, tableItems, tableEntities, tableLinks,
 		tableComments, tableNotes, tableGroups, tableRules, tableInsights,
 	}
-	tables, err := s.Pod().ListTables()
+	infos, err := s.Pod().Tables()
 	if err != nil {
 		t.Fatal(err)
 	}
 	have := map[string]bool{}
-	for _, name := range tables {
-		have[name] = true
+	tables := make([]string, 0, len(infos))
+	for _, t := range infos {
+		have[t.Name] = true
+		tables = append(tables, t.Name)
 	}
 	for _, w := range want {
 		if !have[w] {

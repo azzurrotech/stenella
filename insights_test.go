@@ -794,20 +794,20 @@ func TestHealthReportsPlatformComponents(t *testing.T) {
 	if h["ok"] != true {
 		t.Errorf("ok = %v", h["ok"])
 	}
-	components, _ := h["components"].([]any)
+	// each platform service is probed over HTTP and reported by name
+	components, _ := h["components"].(map[string]any)
 	if len(components) == 0 {
 		t.Fatalf("health carries no components: %s", body)
 	}
-	names := map[string]bool{}
-	for _, raw := range components {
-		c, _ := raw.(map[string]any)
-		if name, _ := c["name"].(string); name != "" {
-			names[name] = true
-		}
-	}
-	for _, want := range []string{"atp", "pod", "song", "shepherd", "secrets", "registry"} {
-		if !names[want] {
+	for _, want := range []string{"atp", "pod", "song", "shepherd"} {
+		raw, ok := components[want]
+		if !ok {
 			t.Errorf("health is missing component %q", want)
+			continue
+		}
+		c, _ := raw.(map[string]any)
+		if c["ok"] != true {
+			t.Errorf("health says %q is not ok: %v", want, c)
 		}
 	}
 

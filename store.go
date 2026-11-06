@@ -18,8 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"azzurrotech/pod"
 )
 
 // Pod table paths. pod allows slashes in a table name, so every stenella table
@@ -40,12 +38,12 @@ const (
 // Store is the record layer. mu guards the read-modify-write sequences that
 // keep derived state consistent (entity counts, cross-source de-duplication).
 type Store struct {
-	pod *pod.Store
+	pod *PodClient
 	mu  sync.Mutex
 }
 
-// NewStore wraps a pod store and makes sure every table exists.
-func NewStore(p *pod.Store) (*Store, error) {
+// NewStore wraps a pod client and makes sure every table exists.
+func NewStore(p *PodClient) (*Store, error) {
 	if p == nil {
 		return nil, errors.New("stenella: nil pod store")
 	}
@@ -57,7 +55,7 @@ func NewStore(p *pod.Store) (*Store, error) {
 }
 
 // Pod exposes the underlying store (the atp console lists it).
-func (s *Store) Pod() *pod.Store { return s.pod }
+func (s *Store) Pod() *PodClient { return s.pod }
 
 // Tables lists the platform's tables in the information model's order.
 func (s *Store) Tables() []string {
@@ -85,7 +83,7 @@ func (s *Store) ensureTables() error {
 		{tableInsights, Insight{}},
 	}
 	for _, sp := range specs {
-		if err := s.pod.EnsureStructSchema(sp.name, sp.sample); err != nil {
+		if err := s.pod.EnsureSchema(sp.name, sp.sample); err != nil {
 			return fmt.Errorf("stenella: schema %s: %w", sp.name, err)
 		}
 	}
@@ -97,7 +95,7 @@ func (s *Store) ensureTables() error {
 // ---------------------------------------------------------------------------
 
 func putRecord[T any](s *Store, table, id string, rec *T) error {
-	if _, _, err := s.pod.UpsertStruct(table, id, rec); err != nil {
+	if err := s.pod.Upsert(table, id, rec); err != nil {
 		return fmt.Errorf("stenella: upsert %s/%s: %w", table, id, err)
 	}
 	return nil
@@ -105,7 +103,7 @@ func putRecord[T any](s *Store, table, id string, rec *T) error {
 
 func getRecord[T any](s *Store, table, id string) (*T, error) {
 	var out T
-	if _, err := s.pod.GetStruct(table, id, &out); err != nil {
+	if err := s.pod.GetStruct(table, id, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -113,8 +111,8 @@ func getRecord[T any](s *Store, table, id string) (*T, error) {
 
 // listRecords decodes every matching record. A record written by an older
 // schema that no longer decodes is skipped rather than failing the query.
-func listRecords[T any](s *Store, table string, cond pod.Cond, opts *pod.QueryOptions) ([]*T, error) {
-	return pod.QueryStruct[T](s.pod, table, cond, opts)
+func listRecords[T any](s *Store, table string, cond Cond, opts *QueryOptions) ([]*T, error) {
+	return QueryStruct[T](s.pod, table, cond, opts)
 }
 
 func listAll[T any](s *Store, table string) ([]*T, error) {
@@ -122,23 +120,23 @@ func listAll[T any](s *Store, table string) ([]*T, error) {
 }
 
 // eq, like, and, or build pod conditions.
-func eq(field, value string) pod.Cond {
-	return pod.PredCond{P: pod.Predicate{Field: field, Op: pod.OpEq, Value: value, HasValue: true}}
+func eq(field, value string) Cond {
+	return PredCond{P: Predicate{Field: field, Op: OpEq, Value: value, HasValue: true}}
 }
 
-func like(field, pattern string) pod.Cond {
-	return pod.PredCond{P: pod.Predicate{Field: field, Op: pod.OpLike, Value: pattern, HasValue: true}}
+func like(field, pattern string) Cond {
+	return PredCond{P: Predicate{Field: field, Op: OpLike, Value: pattern, HasValue: true}}
 }
 
-func and(a, b pod.Cond) pod.Cond { return pod.AndCond{L: a, R: b} }
-func or(a, b pod.Cond) pod.Cond  { return pod.OrCond{L: a, R: b} }
+func and(a, b Cond) Cond { return AndCond{L: a, R: b} }
+func or(a, b Cond) Cond  { return OrCond{L: a, R: b} }
 
 // findOne returns the first record whose field equals value.
 func findOne[T any](s *Store, table, field, value string) (*T, bool) {
 	if value == "" {
 		return nil, false
 	}
-	recs, err := listRecords[T](s, table, eq(field, value), &pod.QueryOptions{Limit: 1})
+	recs, err := listRecords[T](s, table, eq(field, value), &QueryOptions{Limit: 1})
 	if err != nil || len(recs) == 0 {
 		return nil, false
 	}
@@ -259,7 +257,7 @@ func (s *Store) Items(limit int) ([]*Item, error) {
 
 // ItemsIn filters by collection, then source name (both optional).
 func (s *Store) ItemsIn(collection, source string, limit int) ([]*Item, error) {
-	var cond pod.Cond
+	var cond Cond
 	if collection != "" && collection != "all" {
 		cond = eq("collection", collection)
 	}
@@ -271,7 +269,7 @@ func (s *Store) ItemsIn(collection, source string, limit int) ([]*Item, error) {
 			cond = and(cond, c)
 		}
 	}
-	opts := &pod.QueryOptions{OrderBy: "published", Desc: true}
+	opts := &QueryOptions{OrderBy: "published", Desc: true}
 	if limit > 0 {
 		opts.Limit = limit
 	}
@@ -325,7 +323,7 @@ func (s *Store) Entity(id string) (*Entity, error) {
 }
 
 func (s *Store) Entities(limit int) ([]*Entity, error) {
-	opts := &pod.QueryOptions{OrderBy: "count", Desc: true}
+	opts := &QueryOptions{OrderBy: "count", Desc: true}
 	if limit > 0 {
 		opts.Limit = limit
 	}
@@ -347,7 +345,7 @@ func (s *Store) observeEntity(kind, name, itemID string, when time.Time) (string
 
 	e, err := s.Entity(id)
 	if err != nil {
-		if !errors.Is(err, pod.ErrNotFound) {
+		if !errors.Is(err, ErrNotFound) {
 			return "", err
 		}
 		e = &Entity{ID: id, Kind: canonicalKind(kind), Name: name, FirstSeen: when}
@@ -543,7 +541,7 @@ func (s *Store) Insight(id string) (*Insight, error) {
 }
 
 func (s *Store) Insights(status string) ([]*Insight, error) {
-	var cond pod.Cond
+	var cond Cond
 	if status != "" && status != "all" {
 		cond = eq("status", status)
 	}

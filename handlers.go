@@ -11,8 +11,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	"azzurrotech/atp"
 )
 
 // ---------------------------------------------------------------------------
@@ -151,7 +149,7 @@ func (a *App) createItem(w http.ResponseWriter, r *http.Request) {
 // getItem is the analyst's single-item page: the record plus everything the
 // platform and the analyst have attached to it.
 func (a *App) getItem(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	it, err := a.store.Item(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "item not found")
@@ -179,7 +177,7 @@ func (a *App) getItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteItem(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteItem(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -202,7 +200,7 @@ func (a *App) listEntities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) getEntity(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	e, err := a.store.Entity(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "entity not found")
@@ -270,7 +268,7 @@ func (a *App) createLink(w http.ResponseWriter, r *http.Request) {
 // linkAction accepts or rejects a candidate link. Accepting promotes the
 // automatic edge to a human assertion; rejecting deletes it.
 func (a *App) linkAction(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	var in struct {
 		Action string `json:"action"`
 	}
@@ -313,7 +311,7 @@ func (a *App) linkAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteLink(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteLink(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -365,7 +363,7 @@ func (a *App) createComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteComment(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteComment(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -405,7 +403,7 @@ func (a *App) createNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) getNote(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	n, err := a.store.Note(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "note not found")
@@ -415,7 +413,7 @@ func (a *App) getNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteNote(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteNote(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -465,7 +463,7 @@ func (a *App) createGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteGroup(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteGroup(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -523,7 +521,7 @@ func (a *App) createRule(w http.ResponseWriter, r *http.Request) {
 
 // updateRule updates an existing rule with new values.
 func (a *App) updateRule(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	rule, err := a.store.Rule(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "rule not found")
@@ -627,7 +625,7 @@ func normalizeRelations(in []string) []string {
 }
 
 func (a *App) getRule(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	rule, err := a.store.Rule(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "rule not found")
@@ -640,7 +638,7 @@ func (a *App) getRule(w http.ResponseWriter, r *http.Request) {
 // rule over the whole collection and writes its insight. Updates modify rule
 // fields such as name, text, pattern, conditions, etc.
 func (a *App) ruleAction(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	var in struct {
 		Action string `json:"action"`
 	}
@@ -764,7 +762,7 @@ func (a *App) ruleAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteRule(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteRule(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -805,7 +803,7 @@ func (a *App) listInsights(w http.ResponseWriter, r *http.Request) {
 // insightAction is the two-command lifecycle from the README: an insight is
 // dismissed with a reason, or promoted to a note. Reopen reverses either.
 func (a *App) insightAction(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	var in struct {
 		Action string `json:"action"`
 		Reason string `json:"reason"`
@@ -841,7 +839,7 @@ func (a *App) insightAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) deleteInsight(w http.ResponseWriter, r *http.Request) {
-	id := atp.PathParam(r, "id")
+	id := PathParam(r, "id")
 	if err := a.store.DeleteInsight(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -954,24 +952,62 @@ func (a *App) extractGeoFromText(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) health(w http.ResponseWriter, r *http.Request) {
-	// The platform's own report is the source of truth for component state.
-	// A plain GET is cheap and read-only; ?check=1 exercises every module with
-	// pod.WriteRead, a shepherd issue/verify and a vault round-trip.
-	report := a.srv.Health()
-	if formValue(r, "check") == "1" || formValue(r, "probe") == "1" {
-		report = a.srv.Check()
+	// Each platform service is probed over HTTP. A plain GET is read-only and
+	// cheap; the report names every service so a degraded deployment is
+	// visible instead of guessed at.
+	components := map[string]any{}
+	failures := []string{}
+	ok := true
+	atpVersion := ""
+
+	if st, err := a.srv.ATP().Platform(); err != nil {
+		ok = false
+		components["atp"] = map[string]any{"ok": false, "error": err.Error()}
+		failures = append(failures, "atp: "+err.Error())
+	} else {
+		atpVersion = st.Version
+		components["atp"] = map[string]any{"ok": true, "version": st.Version, "addr": st.Addr}
+	}
+
+	if err := a.srv.Pod().Health(); err != nil {
+		ok = false
+		components["pod"] = map[string]any{"ok": false, "error": err.Error()}
+		failures = append(failures, "pod: "+err.Error())
+	} else {
+		components["pod"] = map[string]any{"ok": true}
+	}
+
+	if _, err := a.srv.Song().Health(); err != nil {
+		ok = false
+		components["song"] = map[string]any{"ok": false, "error": err.Error()}
+		failures = append(failures, "song: "+err.Error())
+	} else {
+		components["song"] = map[string]any{"ok": true}
+	}
+
+	if _, err := a.srv.Shepherd().Health(); err != nil {
+		ok = false
+		components["shepherd"] = map[string]any{"ok": false, "error": err.Error()}
+		failures = append(failures, "shepherd: "+err.Error())
+	} else {
+		components["shepherd"] = map[string]any{"ok": true}
+	}
+
+	status := "ok"
+	if !ok {
+		status = "degraded"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         report.OK(),
-		"status":     report.Status,
-		"platform":   "atp",
-		"atp":        atp.Version,
+		"ok":         ok,
+		"status":     status,
+		"platform":   "stenella",
+		"atp":        atpVersion,
 		"app":        "stenella",
 		"time":       nowUTC(),
 		"encrypted":  a.srv.Encrypted(),
 		"counts":     a.store.Counts(),
-		"components": report.Components,
-		"failures":   report.Failures,
+		"components": components,
+		"failures":   failures,
 	})
 }
 

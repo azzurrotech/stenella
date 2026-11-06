@@ -5,60 +5,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"azzurrotech/atp"
 )
 
 // ---------------------------------------------------------------------------
 // a real, in-process platform for handler tests
 // ---------------------------------------------------------------------------
 
-// newTestPlatform builds stenella the way main does: a real atp server with the
-// platform registered on it. Handler tests therefore exercise the same routing,
-// path parameters, body decoding and JSON encoding the live server uses — a
-// handler that works here works when it is served.
-func newTestPlatform(t *testing.T) (*atp.Server, *App) {
-	t.Helper()
-	srv, err := atp.New(atp.Options{
-		Root:   filepath.Join(t.TempDir(), "root"),
-		Addr:   ":0",
-		Secret: "test-master-secret-at-least-32-bytes!!",
-		Title:  "stenella test",
-	})
-	if err != nil {
-		t.Fatalf("atp.New: %v", err)
-	}
-	t.Cleanup(func() { _ = srv.Close() })
-
-	// register the hosted application exactly as main does, so the console's
-	// app/head panels report the same thing in a test as in production
-	if err := srv.Apps().Register(atp.App{
-		Name:        "stenella",
-		Title:       "stenella",
-		ShortName:   "stenella",
-		Description: "Open-source intelligence platform",
-		ThemeColor:  "#0a84ff",
-		Search:      "/stenella/?q={searchTerms}",
-	}); err != nil {
-		t.Fatalf("app register: %v", err)
-	}
-
-	app, err := NewApp(srv)
-	if err != nil {
-		t.Fatalf("NewApp: %v", err)
-	}
-	if err := app.Register(); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	return srv, app
-}
-
-// call performs one request through the live atp server.
-func call(t *testing.T, srv *atp.Server, method, path, body string) (int, string) {
+// call performs one request through the live stenella server.
+func call(t *testing.T, srv *Server, method, path, body string) (int, string) {
 	t.Helper()
 	var rdr io.Reader
 	if body != "" {

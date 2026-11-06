@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"azzurrotech/atp"
 )
 
 // ---------------------------------------------------------------------------
@@ -193,7 +191,7 @@ func TestFeedRejectsBadNamesAndUnknownCollections(t *testing.T) {
 // STX07 — exports
 // ---------------------------------------------------------------------------
 
-func exportFixture(t *testing.T) (*atp.Server, *App) {
+func exportFixture(t *testing.T) (*Server, *App) {
 	t.Helper()
 	srv, app := newTestPlatform(t)
 	when := time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
@@ -538,7 +536,8 @@ func TestOPMLExportImportsBackToTheSameConfiguration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSharesAreVerifiableRevocableCapabilityRecords(t *testing.T) {
-	srv, app := newTestPlatform(t)
+	st := newTestStack(t)
+	srv, app := st.srv, st.app
 	putItem(t, app.store, "item-share", "Something to share", "CBC", "news", time.Now().UTC(), []string{"cyber"})
 
 	// --- issue -------------------------------------------------------------
@@ -559,8 +558,12 @@ func TestSharesAreVerifiableRevocableCapabilityRecords(t *testing.T) {
 		t.Errorf("share does not state what it is: %v", share["note"])
 	}
 
-	// the token verifies with atp's own verifier, and carries the target
-	code, body = call(t, srv, http.MethodPost, "/api/token/verify", `{"token":"`+raw+`"}`)
+	// the token verifies with shepherd's own verifier, and carries the target
+	verifyURL := share["verify"].(string)
+	if verifyURL == "" {
+		t.Fatal("share did not say where to verify the token")
+	}
+	code, body = callRemote(t, verifyURL, http.MethodPost, `{"token":"`+raw+`"}`, nil)
 	if code != http.StatusOK {
 		t.Fatalf("verify: %d %s", code, body)
 	}
@@ -589,11 +592,13 @@ func TestSharesAreVerifiableRevocableCapabilityRecords(t *testing.T) {
 	}
 
 	// --- revoke ------------------------------------------------------------
+	// revocation is an operator action, so it carries shepherd's admin token
 	revoke := fmt.Sprintf(`{"jti":%q,"expires_at":%d}`, jti, int64(claims["exp"].(float64)))
-	if code, body := call(t, srv, http.MethodPost, "/api/revoke", revoke); code != http.StatusOK {
+	admin := map[string]string{"X-Shepherd-Admin": st.adminToken}
+	if code, body := callRemote(t, share["revoke"].(string), http.MethodPost, revoke, admin); code != http.StatusOK {
 		t.Fatalf("revoke: %d %s", code, body)
 	}
-	if code, body := call(t, srv, http.MethodPost, "/api/token/verify", `{"token":"`+raw+`"}`); code != http.StatusUnauthorized {
+	if code, body := callRemote(t, verifyURL, http.MethodPost, `{"token":"`+raw+`"}`, nil); code != http.StatusUnauthorized {
 		t.Errorf("a revoked token still verified: %d %s", code, body)
 	}
 
@@ -609,9 +614,14 @@ func TestSharesAreVerifiableRevocableCapabilityRecords(t *testing.T) {
 		`{"kind":"collection","id":"news"}`); code != http.StatusCreated {
 		t.Errorf("collection share refused: %d %s", code, body)
 	}
-	// and the response never carries a link
-	if code, body := call(t, srv, http.MethodPost, "/stenella/api/share",
-		`{"kind":"item","id":"item-share"}`); code != http.StatusCreated || containsLink(body) {
-		t.Errorf("share response: %d %s", code, body)
+	// and the response never carries a publisher link (the only URLs in it are
+	// the service endpoints a client calls to verify or revoke the token)
+	code, body = call(t, srv, http.MethodPost, "/stenella/api/share",
+		`{"kind":"item","id":"item-share"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("share response: %d %s", code, body)
+	}
+	if scrubbed := strings.ReplaceAll(body, st.shepherdURL, ""); containsLink(scrubbed) {
+		t.Errorf("share response carries a link: %s", body)
 	}
 }

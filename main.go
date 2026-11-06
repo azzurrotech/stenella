@@ -1,7 +1,8 @@
-// Command stenella runs the stenella OSINT platform **on top of atp**: atp is
-// the server, stenella contributes the hosted dashboard, its Go functions and
-// its secrets. This is the integration the atp README describes in
-// "Using atp from another Go project".
+// Command stenella runs the stenella OSINT platform as a standalone service.
+//
+// Stenella owns its HTTP surface. The four platform services it uses — atp,
+// pod, song and shepherd — are reached over HTTP at the URLs below, so the
+// binary can be deployed beside them rather than linked into them.
 package main
 
 import (
@@ -11,8 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-
-	"azzurrotech/atp"
 )
 
 // The assets that ship. The list is explicit rather than "web" so the browser
@@ -23,18 +22,25 @@ var webFS embed.FS
 
 func main() {
 	var (
-		addr   = flag.String("addr", env("ATP_ADDR", ":8080"), "listen address (host:port)")
-		root   = flag.String("root", env("ATP_ROOT", "./data"), "root for the hosted app, the pod store and the vault")
-		secret = flag.String("secret", env("ATP_SECRET", ""), "master secret, at least 32 bytes")
+		addr        = flag.String("addr", env("STENELLA_ADDR", ":8085"), "listen address (host:port)")
+		root        = flag.String("root", env("STENELLA_ROOT", "./data"), "root for the hosted app and local state")
+		podURL      = flag.String("pod", env("POD_URL", "http://127.0.0.1:8081"), "pod service URL")
+		songURL     = flag.String("song", env("SONG_URL", "http://127.0.0.1:8082"), "song service URL")
+		shepherdURL = flag.String("shepherd", env("SHEPHERD_URL", "http://127.0.0.1:8083"), "shepherd service URL")
+		shepherdAdm = flag.String("shepherd-admin", env("SHEPHERD_ADMIN", ""), "shepherd admin token")
+		atpURL      = flag.String("atp", env("ATP_URL", "http://127.0.0.1:8080"), "atp service URL")
 	)
 	flag.Parse()
 
-	// --- the platform is atp ----------------------------------------------
-	srv, err := atp.New(atp.Options{
-		Root:   *root,
-		Addr:   *addr,
-		Secret: *secret,
-		Title:  "stenella — OSINT platform",
+	srv, err := New(Options{
+		Addr:          *addr,
+		Root:          *root,
+		Title:         "stenella — OSINT platform",
+		PodURL:        *podURL,
+		SongURL:       *songURL,
+		ShepherdURL:   *shepherdURL,
+		ShepherdAdmin: *shepherdAdm,
+		ATPURL:        *atpURL,
 	})
 	if err != nil {
 		log.Fatalf("stenella: %v", err)
@@ -42,7 +48,7 @@ func main() {
 	defer srv.Close()
 
 	// --- the hosted application -------------------------------------------
-	if err := srv.Apps().Register(atp.App{
+	if err := srv.Apps().Register(AppMeta{
 		Name:        "stenella",
 		Title:       "stenella",
 		ShortName:   "stenella",
@@ -59,7 +65,6 @@ func main() {
 	}
 	indexPath := filepath.Join(appDir, "index.html")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-		// materialiseWeb should have created it if embedded
 		log.Fatalf("stenella: index.html missing from embedded web assets")
 	}
 
@@ -75,10 +80,7 @@ func main() {
 		Response("/stenella/*.js").Set("Cache-Control", "public, max-age=3600").
 		Internal("X-Stenella-View").FromPath(1)
 
-	// --- secrets (API keys for external sources) ---------------------------
-	// keep minimal
-
-	// --- the platform: stenella on atp ------------------------------------
+	// --- the platform: stenella's own routes ------------------------------
 	app, err := NewApp(srv)
 	if err != nil {
 		log.Fatalf("stenella: %v", err)
@@ -87,8 +89,9 @@ func main() {
 		log.Fatalf("stenella: %v", err)
 	}
 
-	log.Printf("stenella on atp %s listening on %s (root %s)", atp.Version, srv.Addr(), srv.Root())
-	log.Printf("  platform: http://%s/     app: http://%s/stenella/", hostPort(srv.Addr()), hostPort(srv.Addr()))
+	log.Printf("stenella %s listening on %s (root %s)", Version, srv.Addr(), srv.Root())
+	log.Printf("  services: atp %s pod %s song %s shepherd %s", srv.ATP().Base(), srv.Pod().Base(), srv.Song().Base(), srv.Shepherd().Base())
+	log.Printf("  app: http://%s/stenella/", hostPort(srv.Addr()))
 	if err := http.ListenAndServe(srv.Addr(), srv); err != nil {
 		log.Fatal(err)
 	}

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"azzurrotech/atp"
 )
 
 // ---------------------------------------------------------------------------
@@ -26,7 +25,7 @@ import (
 
 // webServer builds a platform whose hosted application has its assets in place,
 // exactly as main does at startup.
-func webServer(t *testing.T) (*atp.Server, string) {
+func webServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	srv, _ := newTestPlatform(t)
 	appDir := filepath.Join(srv.Root(), "apps", "stenella")
@@ -41,7 +40,7 @@ func webServer(t *testing.T) (*atp.Server, string) {
 
 // callHeaders performs one request and returns the response headers, for the
 // checks that care about the content type rather than the body.
-func callHeaders(t *testing.T, srv *atp.Server, method, path string) (int, http.Header) {
+func callHeaders(t *testing.T, srv *Server, method, path string) (int, http.Header) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
