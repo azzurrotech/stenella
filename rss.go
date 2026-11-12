@@ -124,8 +124,16 @@ func sourcesFromEnv(v string) ([]rssSource, bool) {
 
 // rssSources returns the configured sources, honouring the environment.
 func rssSources() []rssSource {
-	if s, ok := sourcesFromEnv(os.Getenv("STELLENA_RSS_SOURCES")); ok {
-		return s
+	// Prefer the new name; fall back to the legacy name for backwards compatibility.
+	if s := os.Getenv("STENELLA_RSS_SOURCES"); s != "" {
+		if sources, ok := sourcesFromEnv(s); ok {
+			return sources
+		}
+	}
+	if s := os.Getenv("STELLENA_RSS_SOURCES"); s != "" {
+		if sources, ok := sourcesFromEnv(s); ok {
+			return sources
+		}
 	}
 	return defaultSources()
 }

@@ -56,10 +56,10 @@ type Options struct {
 
 // Server is the stenella HTTP surface.
 type Server struct {
-	addr     string
-	root     string
-	title    string
-	appsDir  string
+	addr      string
+	root      string
+	title     string
+	appsDir   string
 	encrypted bool
 
 	mux    *http.ServeMux
@@ -109,18 +109,18 @@ func New(o Options) (*Server, error) {
 		return nil, fmt.Errorf("stenella: apps: %w", err)
 	}
 	s := &Server{
-		addr:      o.Addr,
-		root:      o.Root,
-		title:     o.Title,
-		appsDir:   appsDir,
-		mux:       http.NewServeMux(),
-		pod:       NewPodClient(o.PodURL),
-		song:      NewSongClient(o.SongURL),
-		shepherd:  NewShepherdClient(o.ShepherdURL, o.ShepherdAdmin),
-		atp:       NewATPClient(o.ATPURL),
-		apps:      newAppRegistry(),
-		head:      newHead(o.Title),
-		headers:   newHeaders(),
+		addr:     o.Addr,
+		root:     o.Root,
+		title:    o.Title,
+		appsDir:  appsDir,
+		mux:      http.NewServeMux(),
+		pod:      NewPodClient(o.PodURL),
+		song:     NewSongClient(o.SongURL),
+		shepherd: NewShepherdClient(o.ShepherdURL, o.ShepherdAdmin),
+		atp:      NewATPClient(o.ATPURL),
+		apps:     newAppRegistry(),
+		head:     newHead(o.Title),
+		headers:  newHeaders(),
 	}
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -245,19 +245,19 @@ type Icon struct {
 
 // AppMeta is the metadata stenella uses for its own hosted shell.
 type AppMeta struct {
-	Name            string   `json:"name"`
-	Title           string   `json:"title,omitempty"`
-	ShortName       string   `json:"short_name,omitempty"`
-	Description     string   `json:"description,omitempty"`
-	ThemeColor      string   `json:"theme_color,omitempty"`
-	BackgroundColor string   `json:"background_color,omitempty"`
-	Display         string   `json:"display,omitempty"`
-	StartURL        string   `json:"start_url,omitempty"`
-	Scope           string   `json:"scope,omitempty"`
-	Icons           []Icon   `json:"icons,omitempty"`
-	Search          string   `json:"search,omitempty"`
-	Suggestions     string   `json:"suggestions,omitempty"`
-	SearchTitle     string   `json:"search_title,omitempty"`
+	Name            string `json:"name"`
+	Title           string `json:"title,omitempty"`
+	ShortName       string `json:"short_name,omitempty"`
+	Description     string `json:"description,omitempty"`
+	ThemeColor      string `json:"theme_color,omitempty"`
+	BackgroundColor string `json:"background_color,omitempty"`
+	Display         string `json:"display,omitempty"`
+	StartURL        string `json:"start_url,omitempty"`
+	Scope           string `json:"scope,omitempty"`
+	Icons           []Icon `json:"icons,omitempty"`
+	Search          string `json:"search,omitempty"`
+	Suggestions     string `json:"suggestions,omitempty"`
+	SearchTitle     string `json:"search_title,omitempty"`
 }
 
 // AppRegistry holds the applications this server hosts.
@@ -645,10 +645,10 @@ func (h *Headers) applyResponse(hdr http.Header, p string) {
 // headerRecorder applies response rules before the headers are sent.
 type headerRecorder struct {
 	http.ResponseWriter
-	rules    *Headers
-	path     string
-	applied  bool
-	status   int
+	rules   *Headers
+	path    string
+	applied bool
+	status  int
 }
 
 func (w *headerRecorder) WriteHeader(status int) {
@@ -811,11 +811,11 @@ func manifestOf(a AppMeta) map[string]any {
 }
 
 type openSearchDescription struct {
-	XMLName     xml.Name        `xml:"OpenSearchDescription"`
-	XMLNS       string          `xml:"xmlns,attr"`
-	ShortName   string          `xml:"ShortName"`
-	Description string          `xml:"Description"`
-	InputEnc    string          `xml:"InputEncoding"`
+	XMLName     xml.Name `xml:"OpenSearchDescription"`
+	XMLNS       string   `xml:"xmlns,attr"`
+	ShortName   string   `xml:"ShortName"`
+	Description string   `xml:"Description"`
+	InputEnc    string   `xml:"InputEncoding"`
 	Image       struct {
 		Width  int    `xml:"width,attr"`
 		Height int    `xml:"height,attr"`

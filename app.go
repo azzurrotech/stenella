@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 )
 
 // App is stenella: atp plus the OSINT platform.
@@ -171,6 +170,11 @@ func (a *App) routes() []route {
 
 		// --- health ---------------------------------------------------------
 		{"GET", "/stenella/api/health", a.health},
+		// Uniform service health aliases: every BLUE service answers /health
+		// and /api/health, so discovery and operators do not have to know
+		// each service's private path.
+		{"GET", "/health", a.health},
+		{"GET", "/api/health", a.health},
 	}
 }
 

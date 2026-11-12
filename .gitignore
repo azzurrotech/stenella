@@ -8,6 +8,8 @@
 *.dylib
 /stenella
 /stenella.exe
+/stenella-old
+/stenella-server
 
 # Test binary, built with `go test -c`
 *.test

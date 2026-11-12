@@ -244,7 +244,7 @@ func ruleMatches(rule *Rule, it *Item, env *evalEnv) bool {
 		}
 	}
 	// Pattern: optional regex match against the item's title+summary body.
-// When set, the item must contain a match for this rule to fire.
+	// When set, the item must contain a match for this rule to fire.
 	if rule.Pattern != "" {
 		compiled, err := regexp.Compile(rule.Pattern)
 		if err != nil {

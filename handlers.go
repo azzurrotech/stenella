@@ -141,7 +141,10 @@ func (a *App) createItem(w http.ResponseWriter, r *http.Request) {
 	// extract entities from the analyst's own material too
 	raw := rawItem{Title: it.Title, Body: it.Body, When: it.Published, Categories: it.Categories}
 	if n := a.extractInto(&it, raw); n > 0 {
-		_ = a.store.PutItem(&it)
+		if err := a.store.PutItem(&it); err != nil {
+			writeErr(w, http.StatusInternalServerError, "store enriched item: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, a.itemView(&it))
 }
@@ -528,21 +531,21 @@ func (a *App) updateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name       string `json:"name,omitempty"`
-		Text       string `json:"text,omitempty"`
-		Severity   string `json:"severity,omitempty"`
-		Enabled    bool   `json:"enabled,omitempty"`
-		MinReliability string `json:"minReliability,omitempty"`
-		Pattern    string `json:"pattern,omitempty"`
-		CaseSensitive   bool   `json:"caseSensitive,omitempty"`
-		Sources    []string `json:"sources,omitempty"`
-		Entities   []string `json:"entities,omitempty"`
-		Relations  []string `json:"relations,omitempty"`
-		LinkOrigin string `json:"linkOrigin,omitempty"`
-		MinItems   int      `json:"minItems,omitempty"`
-		MinSources int      `json:"minSources,omitempty"`
-		MatchAll   bool     `json:"matchAll,omitempty"`
-		Window     string   `json:"window,omitempty"`
+		Name           string   `json:"name,omitempty"`
+		Text           string   `json:"text,omitempty"`
+		Severity       string   `json:"severity,omitempty"`
+		Enabled        bool     `json:"enabled,omitempty"`
+		MinReliability string   `json:"minReliability,omitempty"`
+		Pattern        string   `json:"pattern,omitempty"`
+		CaseSensitive  bool     `json:"caseSensitive,omitempty"`
+		Sources        []string `json:"sources,omitempty"`
+		Entities       []string `json:"entities,omitempty"`
+		Relations      []string `json:"relations,omitempty"`
+		LinkOrigin     string   `json:"linkOrigin,omitempty"`
+		MinItems       int      `json:"minItems,omitempty"`
+		MinSources     int      `json:"minSources,omitempty"`
+		MatchAll       bool     `json:"matchAll,omitempty"`
+		Window         string   `json:"window,omitempty"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -669,29 +672,35 @@ func (a *App) ruleAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"rule": rule.ID, "fired": true, "count": len(matches)})
 	case "enable":
 		rule.Enabled = true
-		_ = a.store.PutRule(rule)
+		if err := a.store.PutRule(rule); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, rule)
 	case "disable":
 		rule.Enabled = false
-		_ = a.store.PutRule(rule)
+		if err := a.store.PutRule(rule); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, rule)
 	case "update":
 		var in struct {
-			Name         string `json:"name,omitempty"`
-			Text         string `json:"text,omitempty"`
-			Severity     string `json:"severity,omitempty"`
-			Enabled      bool   `json:"enabled,omitempty"`
-			MinReliability string `json:"minReliability,omitempty"`
-			Pattern      string `json:"pattern,omitempty"`
-			CaseSensitive   bool   `json:"caseSensitive,omitempty"`
-			Sources      []string `json:"sources,omitempty"`
-			Entities     []string `json:"entities,omitempty"`
-			Relations    []string `json:"relations,omitempty"`
-			LinkOrigin   string `json:"linkOrigin,omitempty"`
-			MinItems     int      `json:"minItems,omitempty"`
-			MinSources   int      `json:"minSources,omitempty"`
-			MatchAll     bool     `json:"matchAll,omitempty"`
-			Window       string   `json:"window,omitempty"`
+			Name           string   `json:"name,omitempty"`
+			Text           string   `json:"text,omitempty"`
+			Severity       string   `json:"severity,omitempty"`
+			Enabled        bool     `json:"enabled,omitempty"`
+			MinReliability string   `json:"minReliability,omitempty"`
+			Pattern        string   `json:"pattern,omitempty"`
+			CaseSensitive  bool     `json:"caseSensitive,omitempty"`
+			Sources        []string `json:"sources,omitempty"`
+			Entities       []string `json:"entities,omitempty"`
+			Relations      []string `json:"relations,omitempty"`
+			LinkOrigin     string   `json:"linkOrigin,omitempty"`
+			MinItems       int      `json:"minItems,omitempty"`
+			MinSources     int      `json:"minSources,omitempty"`
+			MatchAll       bool     `json:"matchAll,omitempty"`
+			Window         string   `json:"window,omitempty"`
 		}
 		if !decode(w, r, &in) {
 			return
@@ -1000,6 +1009,8 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         ok,
 		"status":     status,
+		"service":    "stenella",
+		"version":    Version,
 		"platform":   "stenella",
 		"atp":        atpVersion,
 		"app":        "stenella",
